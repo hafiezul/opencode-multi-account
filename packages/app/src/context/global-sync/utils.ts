@@ -16,6 +16,13 @@ export function normalizeAgentList(input: unknown): Agent[] {
   return Object.values(input).filter(isAgent)
 }
 
+export const emptyProviderList: ProviderListResponse = {
+  all: [],
+  connected: [],
+  default: {},
+  profile: {},
+}
+
 export function normalizeProviderList(input: ProviderListResponse): ProviderListResponse {
   return {
     ...input,

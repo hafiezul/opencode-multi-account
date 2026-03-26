@@ -14,6 +14,7 @@ import {
   type VcsCache,
 } from "./types"
 import { canDisposeDirectory, pickDirectoriesToEvict } from "./eviction"
+import { emptyProviderList } from "./utils"
 
 export function createChildStoreManager(input: {
   owner: Owner
@@ -161,7 +162,7 @@ export function createChildStoreManager(input: {
             projectMeta: initialMeta,
             icon: initialIcon,
             provider_ready: false,
-            provider: { all: [], connected: [], default: {} },
+            provider: emptyProviderList,
             config: {},
             path: { state: "", config: "", worktree: "", directory: "", home: "" },
             status: "loading" as const,

@@ -24,7 +24,7 @@ import { estimateRootSessionTotal, loadRootSessionsWithFallback } from "./global
 import { trimSessions } from "./global-sync/session-trim"
 import type { ProjectMeta } from "./global-sync/types"
 import { SESSION_RECENT_LIMIT } from "./global-sync/types"
-import { sanitizeProject } from "./global-sync/utils"
+import { emptyProviderList, sanitizeProject } from "./global-sync/utils"
 import { formatServerError } from "@/utils/server-errors"
 
 type GlobalStore = {
@@ -62,7 +62,7 @@ function createGlobalSync() {
     path: { state: "", config: "", worktree: "", directory: "", home: "" },
     project: projectCache.value,
     session_todo: {},
-    provider: { all: [], connected: [], default: {} },
+    provider: emptyProviderList,
     provider_auth: {},
     config: {},
     reload: undefined,
