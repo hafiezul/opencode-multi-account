@@ -163,7 +163,6 @@ export function DialogProviderProfile() {
         title: name,
         value: { providerID: provider.id, name },
         category: provider.name,
-        description: name === item.active ? "Active profile" : undefined,
         footer: name === item.active ? "Active" : undefined,
         async onSelect() {
           if (name === item.active) {

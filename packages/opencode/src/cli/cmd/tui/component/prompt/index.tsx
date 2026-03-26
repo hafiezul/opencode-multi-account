@@ -826,6 +826,11 @@ export function Prompt(props: PromptProps) {
     const current = local.model.variant.current()
     return !!current
   })
+  const profile = createMemo(() => {
+    const id = local.model.current()?.providerID
+    if (!id) return
+    return sync.data.provider_next.profile[id]?.active
+  })
 
   const placeholderText = createMemo(() => {
     if (props.showPlaceholder === false) return undefined
@@ -1089,17 +1094,17 @@ export function Prompt(props: PromptProps) {
               cursorColor={theme.text}
               syntaxStyle={syntax()}
             />
-            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
-              <box flexDirection="row" gap={1}>
-                <text fg={highlight()}>
-                  {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
-                </text>
-                <Show when={store.mode === "normal"}>
+            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
+              <text fg={highlight()}>
+                {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
+              </text>
+              <Show when={store.mode === "normal"}>
+                <>
                   <box flexDirection="row" gap={1}>
                     <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
                       {local.model.parsed().model}
                     </text>
-                    <text fg={theme.textMuted}>{currentProviderLabel()}</text>
+                    <text fg={theme.textMuted}>{local.model.parsed().provider}</text>
                     <Show when={showVariant()}>
                       <text fg={theme.textMuted}>·</text>
                       <text>
@@ -1107,12 +1112,11 @@ export function Prompt(props: PromptProps) {
                       </text>
                     </Show>
                   </box>
-                </Show>
-              </box>
-              <Show when={hasRightContent()}>
-                <box flexDirection="row" gap={1} alignItems="center">
-                  {props.right}
-                </box>
+                  <Show when={profile()}>
+                    <text fg={theme.textMuted}>·</text>
+                    <text fg={theme.text}>{profile()}</text>
+                  </Show>
+                </>
               </Show>
             </box>
           </box>
