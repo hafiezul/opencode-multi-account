@@ -3,27 +3,35 @@ import os from "os"
 import z from "zod"
 import { type ParseError as JsoncParseError, parse as parseJsonc, printParseErrorCode } from "jsonc-parser"
 import { NamedError } from "@opencode-ai/util/error"
+import { Env } from "@/env"
 import { Filesystem } from "@/util/filesystem"
 import { Flag } from "@/flag/flag"
 import { Global } from "@/global"
 
 export namespace ConfigPaths {
   export async function projectFiles(name: string, directory: string, worktree: string) {
-    return Filesystem.findUp([`${name}.json`, `${name}.jsonc`], directory, worktree, { rootFirst: true })
+    return (
+      await Promise.all(
+        [`${name}.jsonc`, `${name}.json`].map(async (file, idx) =>
+          (await Filesystem.findUp(file, directory, worktree)).map((resolved) => ({
+            file: resolved,
+            dir: path.dirname(resolved),
+            idx,
+          })),
+        ),
+      )
+    )
+      .flat()
+      .toSorted((a, b) => {
+        if (a.dir !== b.dir) return a.dir.length - b.dir.length
+        return a.idx - b.idx
+      })
+      .map((item) => item.file)
   }
 
   export async function directories(directory: string, worktree: string) {
     return [
       Global.Path.config,
-      ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
-        ? await Array.fromAsync(
-            Filesystem.up({
-              targets: [".opencode"],
-              start: directory,
-              stop: worktree,
-            }),
-          )
-        : []),
       ...(await Array.fromAsync(
         Filesystem.up({
           targets: [".opencode"],
@@ -31,6 +39,17 @@ export namespace ConfigPaths {
           stop: Global.Path.home,
         }),
       )),
+      ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+        ? (
+            await Array.fromAsync(
+              Filesystem.up({
+                targets: [".opencode"],
+                start: directory,
+                stop: worktree,
+              }),
+            )
+          ).toReversed()
+        : []),
       ...(Flag.OPENCODE_CONFIG_DIR ? [Flag.OPENCODE_CONFIG_DIR] : []),
     ]
   }
@@ -77,7 +96,7 @@ export namespace ConfigPaths {
   /** Apply {env:VAR} and {file:path} substitutions to config text. */
   async function substitute(text: string, input: ParseSource, missing: "error" | "empty" = "error") {
     text = text.replace(/\{env:([^}]+)\}/g, (_, varName) => {
-      return process.env[varName] || ""
+      return Env.get(varName) || ""
     })
 
     const fileMatches = Array.from(text.matchAll(/\{file:[^}]+\}/g))

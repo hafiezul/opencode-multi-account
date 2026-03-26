@@ -20,9 +20,7 @@ import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
 import { Flag } from "@/flag/flag"
 import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
-import { DialogProvider as DialogProviderList } from "@tui/component/dialog-provider"
-import { ErrorComponent } from "@tui/component/error-component"
-import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
+import { DialogProvider as DialogProviderList, DialogProviderProfile } from "@tui/component/dialog-provider"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
 import { StartupLoading } from "@tui/component/startup-loading"
 import { SyncProvider, useSync } from "@tui/context/sync"
@@ -648,6 +646,31 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           },
         ]
       : []),
+    {
+      title: "Switch provider profile",
+      value: "provider.profile",
+      slash: {
+        name: "profiles",
+      },
+      onSelect: () => {
+        const options = sync.data.provider.flatMap((item) => {
+          const profile = sync.data.provider_next.profile[item.id]
+          if (!profile || profile.names.length < 2) return []
+          return profile.names
+        })
+        if (options.length === 0) {
+          toast.show({
+            variant: "info",
+            message: "No switchable provider profiles",
+            duration: 3000,
+          })
+          dialog.clear()
+          return
+        }
+        dialog.replace(() => <DialogProviderProfile />)
+      },
+      category: "Provider",
+    },
     {
       title: "View status",
       keybind: "status_view",

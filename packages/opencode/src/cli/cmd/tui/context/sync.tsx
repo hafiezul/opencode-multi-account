@@ -34,9 +34,10 @@ import { ConsoleState, emptyConsoleState, type ConsoleState as ConsoleStateType 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
+    type ProviderItem = ProviderListResponse["all"][number]
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
-      provider: Provider[]
+      provider: ProviderItem[]
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
       console_state: ConsoleStateType
@@ -82,6 +83,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         all: [],
         default: {},
         connected: [],
+        profile: {},
       },
       console_state: emptyConsoleState,
       provider_auth: {},
@@ -366,7 +368,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
 
       // blocking - include session.list when continuing a session
-      const providersPromise = sdk.client.config.providers({}, { throwOnError: true })
       const providerListPromise = sdk.client.provider.list({}, { throwOnError: true })
       const consoleStatePromise = sdk.client.experimental.console
         .get({}, { throwOnError: true })
@@ -375,7 +376,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const agentsPromise = sdk.client.app.agents({}, { throwOnError: true })
       const configPromise = sdk.client.config.get({}, { throwOnError: true })
       const blockingRequests: Promise<unknown>[] = [
-        providersPromise,
         providerListPromise,
         agentsPromise,
         configPromise,
@@ -384,7 +384,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
       await Promise.all(blockingRequests)
         .then(() => {
-          const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
           const consoleStateResponse = consoleStatePromise
           const agentsResponse = agentsPromise.then((x) => x.data ?? [])
@@ -392,23 +391,24 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const sessionListResponse = args.continue ? sessionListPromise : undefined
 
           return Promise.all([
-            providersResponse,
             providerListResponse,
             consoleStateResponse,
             agentsResponse,
             configResponse,
             ...(sessionListResponse ? [sessionListResponse] : []),
           ]).then((responses) => {
-            const providers = responses[0]
-            const providerList = responses[1]
-            const consoleState = responses[2]
-            const agents = responses[3]
-            const config = responses[4]
-            const sessions = responses[5]
+            const providerList = responses[0]
+            const agents = responses[1]
+            const config = responses[2]
+            const sessions = responses[3]
+            const connected = new Set(providerList.connected)
 
             batch(() => {
-              setStore("provider", reconcile(providers.providers))
-              setStore("provider_default", reconcile(providers.default))
+              setStore("provider", reconcile(providerList.all.filter((item) => connected.has(item.id))))
+              setStore(
+                "provider_default",
+                reconcile(Object.fromEntries(providerList.connected.map((id) => [id, providerList.default[id]]))),
+              )
               setStore("provider_next", reconcile(providerList))
               setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))

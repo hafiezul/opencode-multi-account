@@ -13,7 +13,7 @@ import { DialogModel } from "./dialog-model"
 import { useKeyboard } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
-import { isConsoleManagedProvider } from "@tui/util/provider-origin"
+import { useLocal } from "../context/local"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -146,6 +146,66 @@ export function createDialogProviderOptions() {
 export function DialogProvider() {
   const options = createDialogProviderOptions()
   return <DialogSelect title="Connect a provider" options={options()} />
+}
+
+export function DialogProviderProfile() {
+  const sync = useSync()
+  const dialog = useDialog()
+  const sdk = useSDK()
+  const toast = useToast()
+  const local = useLocal()
+
+  const options = createMemo(() =>
+    sync.data.provider.flatMap((provider) => {
+      const item = sync.data.provider_next.profile[provider.id]
+      if (!item || item.names.length < 2) return []
+      return item.names.map((name) => ({
+        title: name,
+        value: { providerID: provider.id, name },
+        category: provider.name,
+        description: name === item.active ? "Active profile" : undefined,
+        footer: name === item.active ? "Active" : undefined,
+        async onSelect() {
+          if (name === item.active) {
+            dialog.clear()
+            return
+          }
+          const prev = local.model.current()
+          const result = await sdk.client.provider.activate({
+            providerID: provider.id,
+            profile: name,
+          })
+          if (result.error) {
+            toast.show({
+              variant: "error",
+              message: JSON.stringify(result.error),
+            })
+            return
+          }
+          await sync.bootstrap()
+          const next = local.model.current()
+          const same = prev && next && prev.providerID === next.providerID && prev.modelID === next.modelID
+          if (prev && !same) {
+            toast.show({
+              variant: "info",
+              message: next
+                ? `Model ${prev.providerID}/${prev.modelID} is unavailable after the profile switch; using ${next.providerID}/${next.modelID}`
+                : `Model ${prev.providerID}/${prev.modelID} is unavailable after the profile switch`,
+              duration: 3000,
+            })
+          }
+          toast.show({
+            variant: "info",
+            message: `Switched ${provider.name} to ${name}`,
+            duration: 3000,
+          })
+          dialog.clear()
+        },
+      }))
+    }),
+  )
+
+  return <DialogSelect title="Switch provider profile" options={options()} />
 }
 
 interface AutoMethodProps {

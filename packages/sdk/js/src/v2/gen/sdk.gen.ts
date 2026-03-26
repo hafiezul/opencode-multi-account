@@ -88,6 +88,8 @@ import type {
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   ProviderAuthResponses,
+  ProviderActivateErrors,
+  ProviderActivateResponses,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
   ProviderOauthAuthorizeResponses,
@@ -2871,6 +2873,45 @@ export class Provider extends HeyApiClient {
       url: "/provider",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Activate provider profile
+   *
+   * Switch the active auth profile for a provider.
+   */
+  public activate<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      providerID: string
+      profile: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "path", key: "providerID" },
+            { in: "body", key: "profile" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ProviderActivateResponses, ProviderActivateErrors, ThrowOnError>({
+      url: "/provider/{providerID}/activate",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 

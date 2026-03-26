@@ -2977,50 +2977,72 @@ export type ProviderListResponses = {
    */
   200: {
     all: Array<{
-      api?: string
       name: string
       env: Array<string>
       id: string
-      npm?: string
       models: {
         [key: string]: {
           id: string
+          providerID: string
+          api: {
+            id: string
+            url: string
+            npm: string
+          }
           name: string
-          release_date: string
-          attachment: boolean
-          reasoning: boolean
-          temperature: boolean
-          tool_call: boolean
-          cost?: {
+          family?: string
+          capabilities: {
+            temperature: boolean
+            reasoning: boolean
+            attachment: boolean
+            toolcall: boolean
+            input: {
+              text: boolean
+              audio: boolean
+              image: boolean
+              video: boolean
+              pdf: boolean
+            }
+            output: {
+              text: boolean
+              audio: boolean
+              image: boolean
+              video: boolean
+              pdf: boolean
+            }
+            interleaved:
+              | boolean
+              | {
+                  field: "reasoning_content" | "reasoning_details"
+                }
+          }
+          cost: {
             input: number
             output: number
-            cache_read?: number
-            cache_write?: number
-            context_over_200k?: {
+            cache: {
+              read: number
+              write: number
+            }
+            experimentalOver200K?: {
               input: number
               output: number
-              cache_read?: number
-              cache_write?: number
+              cache: {
+                read: number
+                write: number
+              }
             }
           }
           limit: {
             context: number
+            input?: number
             output: number
           }
-          modalities?: {
-            input: Array<"text" | "audio" | "image" | "video" | "pdf">
-            output: Array<"text" | "audio" | "image" | "video" | "pdf">
-          }
-          experimental?: boolean
-          status?: "alpha" | "beta" | "deprecated"
-          options: {
-            [key: string]: unknown
-          }
-          headers?: {
-            [key: string]: string
-          }
-          provider?: {
-            npm: string
+          status: "alpha" | "beta" | "deprecated" | "active"
+          release_date: string
+          variants?: {
+            [key: string]: {
+              [key: string]: unknown
+            }
           }
         }
       }
@@ -3029,10 +3051,56 @@ export type ProviderListResponses = {
       [key: string]: string
     }
     connected: Array<string>
+    profile: {
+      [key: string]: {
+        active: string
+        names: Array<string>
+      }
+    }
   }
 }
 
 export type ProviderListResponse = ProviderListResponses[keyof ProviderListResponses]
+
+export type ProviderActivateData = {
+  body?: {
+    /**
+     * Profile name
+     */
+    profile: string
+  }
+  path: {
+    /**
+     * Provider ID
+     */
+    providerID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/provider/{providerID}/activate"
+}
+
+export type ProviderActivateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderActivateError = ProviderActivateErrors[keyof ProviderActivateErrors]
+
+export type ProviderActivateResponses = {
+  /**
+   * Active provider profile
+   */
+  200: {
+    active: string
+    names: Array<string>
+  }
+}
+
+export type ProviderActivateResponse = ProviderActivateResponses[keyof ProviderActivateResponses]
 
 export type ProviderAuthData = {
   body?: never

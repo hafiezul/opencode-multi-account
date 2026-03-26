@@ -116,6 +116,9 @@ import type {
   CommandListResponses,
   ConfigProvidersData,
   ConfigProvidersResponses,
+  ProviderActivateData,
+  ProviderActivateErrors,
+  ProviderActivateResponses,
   ProviderListData,
   ProviderListResponses,
   ProviderAuthData,
@@ -758,6 +761,20 @@ class Provider extends _HeyApiClient {
     return (options?.client ?? this._client).get<ProviderListResponses, unknown, ThrowOnError>({
       url: "/provider",
       ...options,
+    })
+  }
+
+  /**
+   * Activate provider profile
+   */
+  public activate<ThrowOnError extends boolean = false>(options: Options<ProviderActivateData, ThrowOnError>) {
+    return (options.client ?? this._client).post<ProviderActivateResponses, ProviderActivateErrors, ThrowOnError>({
+      url: "/provider/{providerID}/activate",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
     })
   }
 

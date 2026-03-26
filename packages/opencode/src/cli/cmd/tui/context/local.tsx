@@ -1,4 +1,4 @@
-import { createStore } from "solid-js/store"
+import { createStore, produce } from "solid-js/store"
 import { batch, createEffect, createMemo } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
@@ -198,6 +198,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             () => a.model,
             fallbackModel,
           ) ?? undefined
+        )
+      })
+
+      let invalid = ""
+
+      createEffect(() => {
+        const name = agent.current().name
+        const item = modelStore.model[name]
+        if (!item) {
+          invalid = ""
+          return
+        }
+        if (isModelValid(item)) {
+          invalid = ""
+          return
+        }
+        const key = `${name}:${item.providerID}/${item.modelID}`
+        if (invalid !== key) invalid = key
+        setModelStore(
+          produce((draft) => {
+            delete draft.model[name]
+          }),
         )
       })
 

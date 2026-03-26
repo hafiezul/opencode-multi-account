@@ -59,6 +59,7 @@ import { ModelID, ProviderID } from "./schema"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
+  let sap = Promise.resolve()
 
   function shouldUseCopilotResponsesApi(modelID: string): boolean {
     const match = /^gpt-(\d+)/.exec(modelID)
@@ -114,17 +115,39 @@ export namespace Provider {
     })
   }
 
-  function e2eURL() {
-    const url = Env.get("OPENCODE_E2E_LLM_URL")
-    if (typeof url !== "string" || url === "") return
-    return url
+  async function withsap<T>(key: string | undefined, fn: () => Promise<T> | T) {
+    let done!: () => void
+    const wait = new Promise<void>((resolve) => {
+      done = resolve
+    })
+    const prev = sap
+    sap = sap.finally(() => wait)
+    await prev
+
+    const env = process.env.AICORE_SERVICE_KEY
+    if (env === undefined && key) process.env.AICORE_SERVICE_KEY = key
+
+    try {
+      return await fn()
+    } finally {
+      if (env === undefined) delete process.env.AICORE_SERVICE_KEY
+      else process.env.AICORE_SERVICE_KEY = env
+      done()
+    }
   }
 
-  type BundledSDK = {
-    languageModel(modelId: string): LanguageModelV3
+  function missing(s: Awaited<ReturnType<typeof load>>, model: Model) {
+    const providers = Object.keys(s.providers)
+    const matches = fuzzysort.go(model.providerID, providers, { limit: 3, threshold: -10000 })
+    const suggestions = matches.map((item) => item.target)
+    return new ModelNotFoundError({
+      providerID: model.providerID,
+      modelID: model.id,
+      suggestions,
+    })
   }
 
-  const BUNDLED_PROVIDERS: Record<string, (options: any) => BundledSDK> = {
+  const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
     "@ai-sdk/amazon-bedrock": createAmazonBedrock,
     "@ai-sdk/anthropic": createAnthropic,
     "@ai-sdk/azure": createAzure,
@@ -198,42 +221,100 @@ export namespace Provider {
           }
         }
 
-        return {
-          autoload: Object.keys(input.models).length > 0,
-          options: ok ? {} : { apiKey: "public" },
-        }
-      }),
-      openai: () =>
-        Effect.succeed({
-          autoload: false,
-          async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+      return {
+        autoload: Object.keys(input.models).length > 0,
+        options: hasKey ? {} : { apiKey: "public" },
+      }
+    },
+    openai: async () => {
+      return {
+        autoload: false,
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          return sdk.responses(modelID)
+        },
+        options: {},
+      }
+    },
+    xai: async () => {
+      return {
+        autoload: false,
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          return sdk.responses(modelID)
+        },
+        options: {},
+      }
+    },
+    "github-copilot": async () => {
+      return {
+        autoload: false,
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
+          return shouldUseCopilotResponsesApi(modelID) ? sdk.responses(modelID) : sdk.chat(modelID)
+        },
+        options: {},
+      }
+    },
+    azure: async (provider) => {
+      const resource = iife(() => {
+        const name = provider.options?.resourceName
+        if (typeof name === "string" && name.trim() !== "") return name
+        return Env.get("AZURE_RESOURCE_NAME")
+      })
+
+      return {
+        autoload: false,
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
+          if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
+          if (options?.["useCompletionUrls"]) {
+            return sdk.chat(modelID)
+          } else {
             return sdk.responses(modelID)
-          },
-          options: {},
-        }),
-      xai: () =>
-        Effect.succeed({
-          autoload: false,
-          async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          }
+        },
+        options: {},
+        vars(_options) {
+          return {
+            ...(resource && { AZURE_RESOURCE_NAME: resource }),
+          }
+        },
+      }
+    },
+    "azure-cognitive-services": async () => {
+      const resourceName = Env.get("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME")
+      return {
+        autoload: false,
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
+          if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
+          if (options?.["useCompletionUrls"]) {
+            return sdk.chat(modelID)
+          } else {
             return sdk.responses(modelID)
-          },
-          options: {},
-        }),
-      "github-copilot": () =>
-        Effect.succeed({
-          autoload: false,
-          async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-            if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
-            return shouldUseCopilotResponsesApi(modelID) ? sdk.responses(modelID) : sdk.chat(modelID)
-          },
-          options: {},
-        }),
-      azure: (provider) => {
-        const resource = iife(() => {
-          const name = provider.options?.resourceName
-          if (typeof name === "string" && name.trim() !== "") return name
-          return Env.get("AZURE_RESOURCE_NAME")
-        })
+          }
+        },
+        options: {
+          baseURL: resourceName ? `https://${resourceName}.cognitiveservices.azure.com/openai` : undefined,
+        },
+      }
+    },
+    "amazon-bedrock": async () => {
+      const config = await Config.get()
+      const providerConfig = config.provider?.["amazon-bedrock"]
+
+      const auth = await Auth.get("amazon-bedrock")
+
+      // Region precedence: 1) config file, 2) env var, 3) default
+      const configRegion = providerConfig?.options?.region
+      const envRegion = Env.get("AWS_REGION")
+      const defaultRegion = configRegion ?? envRegion ?? "us-east-1"
+
+      // Profile: config file takes precedence over env var
+      const configProfile = providerConfig?.options?.profile
+      const envProfile = Env.get("AWS_PROFILE")
+      const profile = configProfile ?? envProfile
+
+      const awsAccessKeyId = Env.get("AWS_ACCESS_KEY_ID")
+      const envBearerToken = Env.get("AWS_BEARER_TOKEN_BEDROCK")
+      const awsBearerToken = envBearerToken ? envBearerToken : auth?.type === "api" ? auth.key : undefined
 
         return Effect.succeed({
           autoload: false,
@@ -274,29 +355,28 @@ export namespace Provider {
         const providerConfig = (yield* dep.config()).provider?.["amazon-bedrock"]
         const auth = yield* dep.auth("amazon-bedrock")
 
-        // Region precedence: 1) config file, 2) env var, 3) default
-        const configRegion = providerConfig?.options?.region
-        const envRegion = Env.get("AWS_REGION")
-        const defaultRegion = configRegion ?? envRegion ?? "us-east-1"
+      const containerCreds = Boolean(
+        Env.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") || Env.get("AWS_CONTAINER_CREDENTIALS_FULL_URI"),
+      )
 
         // Profile: config file takes precedence over env var
         const configProfile = providerConfig?.options?.profile
         const envProfile = Env.get("AWS_PROFILE")
         const profile = configProfile ?? envProfile
 
-        const awsAccessKeyId = Env.get("AWS_ACCESS_KEY_ID")
+      const providerOptions: AmazonBedrockProviderSettings & { apiKey?: string } = {
+        region: defaultRegion,
+      }
 
-        // TODO: Using process.env directly because Env.set only updates a process.env shallow copy,
-        // until the scope of the Env API is clarified (test only or runtime?)
-        const awsBearerToken = iife(() => {
-          const envToken = process.env.AWS_BEARER_TOKEN_BEDROCK
-          if (envToken) return envToken
-          if (auth?.type === "api") {
-            process.env.AWS_BEARER_TOKEN_BEDROCK = auth.key
-            return auth.key
-          }
-          return undefined
-        })
+      if (awsBearerToken) {
+        providerOptions.apiKey = awsBearerToken
+      }
+
+      // Only use credential chain if no bearer token exists
+      // Bearer token takes precedence over credential chain (profiles, access keys, IAM roles, web identity tokens)
+      if (!awsBearerToken) {
+        // Build credential provider options (only pass profile if specified)
+        const credentialProviderOptions = profile ? { profile } : {}
 
         const awsWebIdentityTokenFile = Env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
 
@@ -414,16 +494,105 @@ export namespace Provider {
 
             return sdk.languageModel(modelID)
           },
-        }
-      }),
-      openrouter: () =>
-        Effect.succeed({
-          autoload: false,
-          options: {
-            headers: {
-              "HTTP-Referer": "https://opencode.ai/",
-              "X-Title": "opencode",
-            },
+        },
+      }
+    },
+    vercel: async () => {
+      return {
+        autoload: false,
+        options: {
+          headers: {
+            "http-referer": "https://opencode.ai/",
+            "x-title": "opencode",
+          },
+        },
+      }
+    },
+    "google-vertex": async (provider) => {
+      const project =
+        provider.options?.project ??
+        Env.get("GOOGLE_CLOUD_PROJECT") ??
+        Env.get("GCP_PROJECT") ??
+        Env.get("GCLOUD_PROJECT")
+
+      const location = String(
+        provider.options?.location ??
+          Env.get("GOOGLE_VERTEX_LOCATION") ??
+          Env.get("GOOGLE_CLOUD_LOCATION") ??
+          Env.get("VERTEX_LOCATION") ??
+          "us-central1",
+      )
+
+      const autoload = Boolean(project)
+      if (!autoload) return { autoload: false }
+      return {
+        autoload: true,
+        vars(_options: Record<string, any>) {
+          const endpoint = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`
+          return {
+            ...(project && { GOOGLE_VERTEX_PROJECT: project }),
+            GOOGLE_VERTEX_LOCATION: location,
+            GOOGLE_VERTEX_ENDPOINT: endpoint,
+          }
+        },
+        options: {
+          project,
+          location,
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            const auth = new GoogleAuth()
+            const client = await auth.getApplicationDefault()
+            const token = await client.credential.getAccessToken()
+
+            const headers = new Headers(init?.headers)
+            headers.set("Authorization", `Bearer ${token.token}`)
+
+            return fetch(input, { ...init, headers })
+          },
+        },
+        async getModel(sdk: any, modelID: string) {
+          const id = String(modelID).trim()
+          return sdk.languageModel(id)
+        },
+      }
+    },
+    "google-vertex-anthropic": async () => {
+      const project = Env.get("GOOGLE_CLOUD_PROJECT") ?? Env.get("GCP_PROJECT") ?? Env.get("GCLOUD_PROJECT")
+      const location = Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "global"
+      const autoload = Boolean(project)
+      if (!autoload) return { autoload: false }
+      return {
+        autoload: true,
+        options: {
+          project,
+          location,
+        },
+        async getModel(sdk: any, modelID) {
+          const id = String(modelID).trim()
+          return sdk.languageModel(id)
+        },
+      }
+    },
+    "sap-ai-core": async () => {
+      const auth = await Auth.get("sap-ai-core")
+      const serviceKey = process.env.AICORE_SERVICE_KEY ?? (auth?.type === "api" ? auth.key : undefined)
+      const deploymentId = process.env.AICORE_DEPLOYMENT_ID
+      const resourceGroup = process.env.AICORE_RESOURCE_GROUP
+
+      return {
+        autoload: !!serviceKey,
+        options: serviceKey ? { deploymentId, resourceGroup, serviceKey } : {},
+        async getModel(sdk: any, modelID: string) {
+          return sdk(modelID)
+        },
+      }
+    },
+    zenmux: async () => {
+      return {
+        autoload: false,
+        options: {
+          headers: {
+            "HTTP-Referer": "https://opencode.ai/",
+            "X-Title": "opencode",
           },
         }),
       vercel: () =>
@@ -1004,12 +1173,21 @@ export namespace Provider {
     }
   }
 
-  const layer: Layer.Layer<Service, never, Config.Service | Auth.Service | Plugin.Service> = Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const config = yield* Config.Service
-      const auth = yield* Auth.Service
-      const plugin = yield* Plugin.Service
+  interface State {
+    models: Map<string, LanguageModelV2>
+    providers: Record<ProviderID, Info>
+    sdk: Map<string, SDK>
+    modelLoaders: Record<string, CustomModelLoader>
+    varsLoaders: Record<string, CustomVarsLoader>
+  }
+
+  const box = Instance.state(() => ({ rev: "", state: undefined as Promise<State> | undefined }))
+
+  const load = async (): Promise<State> => {
+    using _ = log.time("state")
+    const config = await Config.get()
+    const modelsDev = await ModelsDev.get()
+    const database = mapValues(modelsDev, fromModelsDevProvider)
 
       const state = yield* InstanceState.make<State>(() =>
         Effect.gen(function* () {
@@ -1035,19 +1213,62 @@ export namespace Provider {
             config: () => config.get(),
           }
 
-          log.info("init")
+    return {
+      models: languages,
+      providers,
+      sdk,
+      modelLoaders,
+      varsLoaders,
+    }
+  }
 
-          function mergeProvider(providerID: ProviderID, provider: Partial<Info>) {
-            const existing = providers[providerID]
-            if (existing) {
-              // @ts-expect-error
-              providers[providerID] = mergeDeep(existing, provider)
-              return
-            }
-            const match = database[providerID]
-            if (!match) return
-            // @ts-expect-error
-            providers[providerID] = mergeDeep(match, provider)
+  async function state() {
+    const item = box()
+    const rev = await Config.revision()
+    if (item.rev === rev && item.state) return item.state
+    item.rev = rev
+    item.state = load()
+    return item.state
+  }
+
+  export async function list() {
+    return state().then((state) => state.providers)
+  }
+
+  async function getSDK(model: Model) {
+    try {
+      using _ = log.time("getSDK", {
+        providerID: model.providerID,
+      })
+      const s = await state()
+      const provider = s.providers[model.providerID]
+      if (!provider) throw missing(s, model)
+      const options = { ...provider.options }
+      const serviceKey = typeof options["serviceKey"] === "string" ? options["serviceKey"] : undefined
+      delete options["serviceKey"]
+
+      if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
+        delete options.fetch
+      }
+
+      if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
+        options["includeUsage"] = true
+      }
+
+      const baseURL = iife(() => {
+        let url =
+          typeof options["baseURL"] === "string" && options["baseURL"] !== "" ? options["baseURL"] : model.api.url
+        if (!url) return
+
+        // some models/providers have variable urls, ex: "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1"
+        // We track this in models.dev, and then when we are resolving the baseURL
+        // we need to string replace that literal: "${AZURE_RESOURCE_NAME}"
+        const loader = s.varsLoaders[model.providerID]
+        if (loader) {
+          const vars = loader(options)
+          for (const [key, value] of Object.entries(vars)) {
+            const field = "${" + key + "}"
+            url = url.replaceAll(field, value)
           }
 
           // load plugins first so config() hook runs before reading cfg.provider
@@ -1598,56 +1819,64 @@ export namespace Provider {
           }
         }
 
-        return undefined
-      })
+        const res = await fetchFn(input, {
+          ...opts,
+          // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+          timeout: false,
+        })
 
-      const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
-        const cfg = yield* config.get()
-        if (cfg.model) return parseModel(cfg.model)
+        if (!chunkAbortCtl) return res
+        return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+      }
 
-        const s = yield* InstanceState.get(state)
-        const recent = yield* Effect.promise(() =>
-          Filesystem.readJson<{
-            recent?: { providerID: ProviderID; modelID: ModelID }[]
-          }>(path.join(Global.Path.state, "model.json"))
-            .then((x): { providerID: ProviderID; modelID: ModelID }[] => (Array.isArray(x.recent) ? x.recent : []))
-            .catch((): { providerID: ProviderID; modelID: ModelID }[] => []),
-        )
-        for (const entry of recent) {
-          const provider = s.providers[entry.providerID]
-          if (!provider) continue
-          if (!provider.models[entry.modelID]) continue
-          return { providerID: entry.providerID, modelID: entry.modelID }
-        }
+      const bundledFn = BUNDLED_PROVIDERS[model.api.npm]
+      if (bundledFn) {
+        log.info("using bundled provider", { providerID: model.providerID, pkg: model.api.npm })
+        const loaded =
+          model.providerID === "sap-ai-core"
+            ? await withsap(serviceKey, () =>
+                bundledFn({
+                  name: model.providerID,
+                  ...options,
+                }),
+              )
+            : bundledFn({
+                name: model.providerID,
+                ...options,
+              })
+        s.sdk.set(key, loaded)
+        return loaded as SDK
+      }
 
-        const provider = Object.values(s.providers).find(
-          (p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id),
-        )
-        if (!provider) throw new Error("no providers found")
-        const [model] = sort(Object.values(provider.models))
-        if (!model) throw new Error("no models found")
-        return {
-          providerID: provider.id,
-          modelID: model.id,
-        }
-      })
+      let installedPath: string
+      if (!model.api.npm.startsWith("file://")) {
+        installedPath = await BunProc.install(model.api.npm, "latest")
+      } else {
+        log.info("loading local provider", { pkg: model.api.npm })
+        installedPath = model.api.npm
+      }
 
-      return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
-    }),
-  )
+      const mod = await import(installedPath)
 
-  export const defaultLayer = Layer.suspend(() =>
-    layer.pipe(
-      Layer.provide(Config.defaultLayer),
-      Layer.provide(Auth.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
-    ),
-  )
-
-  const { runPromise } = makeRuntime(Service, defaultLayer)
-
-  export async function list() {
-    return runPromise((svc) => svc.list())
+      const fn = mod[Object.keys(mod).find((key) => key.startsWith("create"))!]
+      const loaded =
+        model.providerID === "sap-ai-core"
+          ? await withsap(serviceKey, () =>
+              fn({
+                name: model.providerID,
+                ...options,
+              }),
+            )
+          : fn({
+              name: model.providerID,
+              ...options,
+            })
+      s.sdk.set(key, loaded)
+      return loaded as SDK
+    } catch (e) {
+      if (e instanceof ModelNotFoundError) throw e
+      throw new InitError({ providerID: model.providerID }, { cause: e })
+    }
   }
 
   export async function getProvider(providerID: ProviderID) {
@@ -1658,8 +1887,32 @@ export namespace Provider {
     return runPromise((svc) => svc.getModel(providerID, modelID))
   }
 
-  export async function getLanguage(model: Model) {
-    return runPromise((svc) => svc.getLanguage(model))
+  export async function getLanguage(model: Model): Promise<LanguageModelV2> {
+    const s = await state()
+    const key = `${model.providerID}/${model.id}`
+    if (s.models.has(key)) return s.models.get(key)!
+
+    const provider = s.providers[model.providerID]
+    if (!provider) throw missing(s, model)
+    const sdk = await getSDK(model)
+
+    try {
+      const language = s.modelLoaders[model.providerID]
+        ? await s.modelLoaders[model.providerID](sdk, model.api.id, { ...provider.options, ...model.options })
+        : sdk.languageModel(model.api.id)
+      s.models.set(key, language)
+      return language
+    } catch (e) {
+      if (e instanceof NoSuchModelError)
+        throw new ModelNotFoundError(
+          {
+            modelID: model.id,
+            providerID: model.providerID,
+          },
+          { cause: e },
+        )
+      throw e
+    }
   }
 
   export async function closest(providerID: ProviderID, query: string[]) {

@@ -16,7 +16,172 @@ import { text } from "node:stream/consumers"
 
 type PluginAuth = NonNullable<Hooks["auth"]>
 
-async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, methodName?: string): Promise<boolean> {
+type Entry = {
+  id: string
+  active?: string
+  profiles: Array<{
+    name: string
+    type: Auth.Info["type"]
+    active: boolean
+  }>
+}
+
+export function formatProviderLabel(input: { id: string; name?: string }) {
+  if (!input.name || input.name === input.id) return input.id
+  return `${input.name} ${UI.Style.TEXT_DIM}${input.id}`
+}
+
+export function formatProfileLine(input: { name: string; type: Auth.Info["type"]; active: boolean }) {
+  return `  ${input.active ? "●" : "○"} ${input.name} ${UI.Style.TEXT_DIM}${input.type}${input.active ? " (active)" : ""}`
+}
+
+export function getLogoutMode(input: { total: number; profile?: string; all?: boolean }) {
+  if (input.all && input.profile) return "invalid" as const
+  if (input.all) return "provider" as const
+  if (input.profile) return "profile" as const
+  return input.total <= 1 ? ("provider" as const) : ("prompt" as const)
+}
+
+export function getProviderNames(input: {
+  database: Record<string, { name?: string }>
+  config?: { provider?: Record<string, { name?: string }> }
+}) {
+  return {
+    ...Object.fromEntries(Object.entries(input.database).map(([id, x]) => [id, x.name])),
+    ...Object.fromEntries(
+      Object.entries(input.config?.provider ?? {})
+        .filter(([, x]) => x.name !== undefined)
+        .map(([id, x]) => [id, x.name]),
+    ),
+  }
+}
+
+export const all = Symbol("all-profiles")
+
+const invalid = Symbol("invalid-provider")
+
+class AmbiguousError extends Error {}
+
+async function saveAuth(provider: string, info: Auth.Info, profile?: string) {
+  if (!profile) {
+    await Auth.set(provider, info)
+    return
+  }
+  await Auth.put(provider, profile, info)
+  await Auth.activate(provider, profile)
+}
+
+function matchProvider(input: { options: Array<{ label: string; value: string }>; value: string }) {
+  const byID = input.options.find((x) => x.value === input.value)
+  const byName = input.options.find((x) => x.label.toLowerCase() === input.value.toLowerCase())
+  return byID ?? byName
+}
+
+export function resolveStoredProvider(input: {
+  entries: Array<{ id: string }>
+  names: Record<string, string | undefined>
+  value: string
+}) {
+  const id = input.entries.find((x) => x.id === input.value)?.id
+  if (id) return id
+  const matches = input.entries.filter((x) => (input.names[x.id] ?? x.id).toLowerCase() === input.value.toLowerCase())
+  if (matches.length > 1) {
+    throw new AmbiguousError(
+      `Provider name "${input.value}" is ambiguous. Use an exact provider id: ${matches.map((x) => x.id).join(", ")}`,
+    )
+  }
+  return matches[0]?.id
+}
+
+function resolveProvider(input: {
+  entries: Array<{ id: string }>
+  names: Record<string, string | undefined>
+  value: string
+}) {
+  try {
+    return resolveStoredProvider(input)
+  } catch (err) {
+    if (err instanceof AmbiguousError) {
+      prompts.log.error(err.message)
+      return invalid
+    }
+    throw err
+  }
+}
+
+export function getActiveEnv(input: {
+  database: Record<string, { env: string[] }>
+  names: Record<string, string | undefined>
+  env: Record<string, string | undefined>
+}) {
+  return Object.entries(input.database).flatMap(([id, provider]) =>
+    provider.env.filter((envVar) => input.env[envVar]).map((envVar) => ({ provider: input.names[id] ?? id, envVar })),
+  )
+}
+
+export function hasProfile(input: { profiles: Array<{ name: string }>; value: string }) {
+  return input.profiles.some((x) => x.name === input.value)
+}
+
+function sortProfiles(input: Record<string, Auth.Info>, active?: string) {
+  return Object.entries(input)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => Number(b === active) - Number(a === active))
+    .map(([name, info]) => ({
+      name,
+      type: info.type,
+      active: name === active,
+    }))
+}
+
+async function getEntries(provider?: string): Promise<Entry[]> {
+  const data = await Auth.all()
+  const ids = provider ? [provider] : Object.keys(data).sort()
+  return Promise.all(
+    ids.map(async (id) => {
+      const item = await Auth.entry(id)
+      if (!item) return
+      return {
+        id,
+        active: item.active,
+        profiles: sortProfiles(item.profiles, item.active),
+      }
+    }),
+  ).then((x) => x.flatMap((item) => (item ? [item] : [])))
+}
+
+async function promptProfile(input: {
+  entry: Entry
+  message: string
+  includeAll?: boolean
+}): Promise<string | typeof all> {
+  const extra: { label: string; value: typeof all; hint: string } = {
+    label: "All profiles",
+    value: all,
+    hint: "remove provider entry",
+  }
+  const options: Array<{ label: string; value: string | typeof all; hint: string }> = [
+    ...input.entry.profiles.map((x) => ({
+      label: `${x.name}${x.active ? " (active)" : ""}`,
+      value: x.name,
+      hint: x.type,
+    })),
+    ...(input.includeAll ? [extra] : []),
+  ]
+  const value = await prompts.select<string | typeof all>({
+    message: input.message,
+    options,
+  })
+  if (prompts.isCancel(value)) throw new UI.CancelledError()
+  return value
+}
+
+async function handlePluginAuth(
+  plugin: { auth: PluginAuth },
+  provider: string,
+  methodName?: string,
+  profile?: string,
+): Promise<boolean> {
   let index = 0
   if (methodName) {
     const match = plugin.auth.methods.findIndex((x) => x.label.toLowerCase() === methodName.toLowerCase())
@@ -93,19 +258,27 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
-          await Auth.set(saveProvider, {
-            type: "oauth",
-            refresh,
-            access,
-            expires,
-            ...extraFields,
-          })
+          await saveAuth(
+            saveProvider,
+            {
+              type: "oauth",
+              refresh,
+              access,
+              expires,
+              ...extraFields,
+            },
+            profile,
+          )
         }
         if ("key" in result) {
-          await Auth.set(saveProvider, {
-            type: "api",
-            key: result.key,
-          })
+          await saveAuth(
+            saveProvider,
+            {
+              type: "api",
+              key: result.key,
+            },
+            profile,
+          )
         }
         spinner.stop("Login successful")
       }
@@ -125,19 +298,27 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
-          await Auth.set(saveProvider, {
-            type: "oauth",
-            refresh,
-            access,
-            expires,
-            ...extraFields,
-          })
+          await saveAuth(
+            saveProvider,
+            {
+              type: "oauth",
+              refresh,
+              access,
+              expires,
+              ...extraFields,
+            },
+            profile,
+          )
         }
         if ("key" in result) {
-          await Auth.set(saveProvider, {
-            type: "api",
-            key: result.key,
-          })
+          await saveAuth(
+            saveProvider,
+            {
+              type: "api",
+              key: result.key,
+            },
+            profile,
+          )
         }
         prompts.log.success("Login successful")
       }
@@ -155,10 +336,14 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
       }
       if (result.type === "success") {
         const saveProvider = result.provider ?? provider
-        await Auth.set(saveProvider, {
-          type: "api",
-          key: result.key,
-        })
+        await saveAuth(
+          saveProvider,
+          {
+            type: "api",
+            key: result.key,
+          },
+          profile,
+        )
         prompts.log.success("Login successful")
       }
       prompts.outro("Done")
@@ -201,7 +386,13 @@ export const ProvidersCommand = cmd({
   aliases: ["auth"],
   describe: "manage AI providers and credentials",
   builder: (yargs) =>
-    yargs.command(ProvidersListCommand).command(ProvidersLoginCommand).command(ProvidersLogoutCommand).demandCommand(),
+    yargs
+      .command(ProvidersListCommand)
+      .command(ProvidersStatusCommand)
+      .command(ProvidersLoginCommand)
+      .command(ProvidersSwitchCommand)
+      .command(ProvidersLogoutCommand)
+      .demandCommand(),
   async handler() {},
 })
 
@@ -209,34 +400,40 @@ export const ProvidersListCommand = cmd({
   command: "list",
   aliases: ["ls"],
   describe: "list providers and credentials",
-  async handler(_args) {
+  builder: (yargs) =>
+    yargs.option("provider", {
+      alias: ["p"],
+      describe: "provider id to inspect",
+      type: "string",
+    }),
+  async handler(args) {
     UI.empty()
     const authPath = path.join(Global.Path.data, "auth.json")
     const homedir = os.homedir()
     const displayPath = authPath.startsWith(homedir) ? authPath.replace(homedir, "~") : authPath
     prompts.intro(`Credentials ${UI.Style.TEXT_DIM}${displayPath}`)
-    const results = Object.entries(await Auth.all())
+    const config = await Config.get()
     const database = await ModelsDev.get()
-
-    for (const [providerID, result] of results) {
-      const name = database[providerID]?.name || providerID
-      prompts.log.info(`${name} ${UI.Style.TEXT_DIM}${result.type}`)
+    const names = getProviderNames({ database, config })
+    const all = await getEntries()
+    const provider = args.provider ? resolveProvider({ entries: all, names, value: args.provider }) : undefined
+    if (provider === invalid) process.exit(1)
+    if (args.provider && !provider) {
+      prompts.log.error(`No credentials found for ${args.provider}`)
+      return
     }
+    const results = provider ? all.filter((x) => x.id === provider) : all
 
-    prompts.outro(`${results.length} credentials`)
-
-    const activeEnvVars: Array<{ provider: string; envVar: string }> = []
-
-    for (const [providerID, provider] of Object.entries(database)) {
-      for (const envVar of provider.env) {
-        if (process.env[envVar]) {
-          activeEnvVars.push({
-            provider: provider.name || providerID,
-            envVar,
-          })
-        }
+    for (const result of results) {
+      prompts.log.info(formatProviderLabel({ id: result.id, name: names[result.id] }))
+      for (const profile of result.profiles) {
+        prompts.log.info(formatProfileLine(profile))
       }
     }
+
+    prompts.outro(`${results.length} provider` + (results.length === 1 ? "" : "s"))
+
+    const activeEnvVars = getActiveEnv({ database, names, env: process.env })
 
     if (activeEnvVars.length > 0) {
       UI.empty()
@@ -248,6 +445,42 @@ export const ProvidersListCommand = cmd({
 
       prompts.outro(`${activeEnvVars.length} environment variable` + (activeEnvVars.length === 1 ? "" : "s"))
     }
+  },
+})
+
+export const ProvidersStatusCommand = cmd({
+  command: "status [provider]",
+  describe: "show provider profile status",
+  builder: (yargs) =>
+    yargs.option("provider", {
+      alias: ["p"],
+      describe: "provider id to inspect",
+      type: "string",
+    }),
+  async handler(args) {
+    UI.empty()
+    const config = await Config.get()
+    const database = await ModelsDev.get()
+    const names = getProviderNames({ database, config })
+    const all = await getEntries()
+    const provider = args.provider ? resolveProvider({ entries: all, names, value: args.provider }) : undefined
+    if (provider === invalid) process.exit(1)
+    if (args.provider && !provider) {
+      prompts.log.error(`No credentials found for ${args.provider}`)
+      return
+    }
+    const results = provider ? all.filter((x) => x.id === provider) : all
+    if (results.length === 0) {
+      prompts.log.error("No credentials found")
+      return
+    }
+    for (const result of results) {
+      prompts.log.info(formatProviderLabel({ id: result.id, name: names[result.id] }))
+      for (const profile of result.profiles) {
+        prompts.log.info(formatProfileLine(profile))
+      }
+    }
+    prompts.outro("Done")
   },
 })
 
@@ -269,6 +502,10 @@ export const ProvidersLoginCommand = cmd({
         alias: ["m"],
         describe: "login method label (skips method selection)",
         type: "string",
+      })
+      .option("profile", {
+        describe: "profile name to write and activate",
+        type: "string",
       }),
   async handler(args) {
     await Instance.provide({
@@ -277,8 +514,11 @@ export const ProvidersLoginCommand = cmd({
         UI.empty()
         prompts.intro("Add credential")
         if (args.url) {
+          if (args.profile) prompts.log.warn("Ignoring --profile for URL login")
           const url = args.url.replace(/\/+$/, "")
-          const wellknown = await fetch(`${url}/.well-known/opencode`).then((x) => x.json() as any)
+          const wellknown = await fetch(`${url}/.well-known/opencode`).then(
+            (x) => x.json() as Promise<{ auth: { command: string[]; env: string } }>,
+          )
           prompts.log.info(`Running \`${wellknown.auth.command.join(" ")}\``)
           const proc = Process.spawn(wellknown.auth.command, {
             stdout: "pipe",
@@ -319,6 +559,7 @@ export const ProvidersLoginCommand = cmd({
           }
           return filtered
         })
+        const names = getProviderNames({ database: providers, config })
 
         const priority: Record<string, number> = {
           opencode: 0,
@@ -334,7 +575,7 @@ export const ProvidersLoginCommand = cmd({
           existingProviders: providers,
           disabled,
           enabled,
-          providerNames: Object.fromEntries(Object.entries(config.provider ?? {}).map(([id, p]) => [id, p.name])),
+          providerNames: names,
         })
         const options = [
           ...pipe(
@@ -345,7 +586,7 @@ export const ProvidersLoginCommand = cmd({
               (x) => x.name ?? x.id,
             ),
             map((x) => ({
-              label: x.name,
+              label: formatProviderLabel({ id: x.id, name: names[x.id] }),
               value: x.id,
               hint: {
                 opencode: "recommended",
@@ -354,7 +595,7 @@ export const ProvidersLoginCommand = cmd({
             })),
           ),
           ...pluginProviders.map((x) => ({
-            label: x.name,
+            label: formatProviderLabel(x),
             value: x.id,
             hint: "plugin",
           })),
@@ -362,15 +603,18 @@ export const ProvidersLoginCommand = cmd({
 
         let provider: string
         if (args.provider) {
-          const input = args.provider
-          const byID = options.find((x) => x.value === input)
-          const byName = options.find((x) => x.label.toLowerCase() === input.toLowerCase())
-          const match = byID ?? byName
+          const match =
+            resolveProvider({
+              entries: options.map((x) => ({ id: x.value })),
+              names,
+              value: args.provider,
+            }) ?? matchProvider({ options, value: args.provider })?.value
+          if (match === invalid) process.exit(1)
           if (!match) {
-            prompts.log.error(`Unknown provider "${input}"`)
+            prompts.log.error(`Unknown provider "${args.provider}"`)
             process.exit(1)
           }
-          provider = match.value
+          provider = match
         } else {
           const selected = await prompts.autocomplete({
             message: "Select provider",
@@ -389,7 +633,7 @@ export const ProvidersLoginCommand = cmd({
 
         const plugin = await Plugin.list().then((x) => x.findLast((x) => x.auth?.provider === provider))
         if (plugin && plugin.auth) {
-          const handled = await handlePluginAuth({ auth: plugin.auth }, provider, args.method)
+          const handled = await handlePluginAuth({ auth: plugin.auth }, provider, args.method, args.profile)
           if (handled) return
         }
 
@@ -403,7 +647,7 @@ export const ProvidersLoginCommand = cmd({
 
           const customPlugin = await Plugin.list().then((x) => x.findLast((x) => x.auth?.provider === provider))
           if (customPlugin && customPlugin.auth) {
-            const handled = await handlePluginAuth({ auth: customPlugin.auth }, provider, args.method)
+            const handled = await handlePluginAuth({ auth: customPlugin.auth }, provider, args.method, args.profile)
             if (handled) return
           }
 
@@ -441,10 +685,14 @@ export const ProvidersLoginCommand = cmd({
           validate: (x) => (x && x.length > 0 ? undefined : "Required"),
         })
         if (prompts.isCancel(key)) throw new UI.CancelledError()
-        await Auth.set(provider, {
-          type: "api",
-          key,
-        })
+        await saveAuth(
+          provider,
+          {
+            type: "api",
+            key,
+          },
+          args.profile,
+        )
 
         prompts.outro("Done")
       },
@@ -452,27 +700,146 @@ export const ProvidersLoginCommand = cmd({
   },
 })
 
+export const ProvidersSwitchCommand = cmd({
+  command: "switch",
+  describe: "switch the active provider profile",
+  builder: (yargs) =>
+    yargs
+      .option("provider", {
+        alias: ["p"],
+        describe: "provider id to switch",
+        type: "string",
+      })
+      .option("profile", {
+        describe: "profile name to activate",
+        type: "string",
+      }),
+  async handler(args) {
+    UI.empty()
+    const config = await Config.get()
+    const database = await ModelsDev.get()
+    const names = getProviderNames({ database, config })
+    const entries = await getEntries()
+    if (entries.length === 0) {
+      prompts.log.error("No credentials found")
+      return
+    }
+    const provider = args.provider
+      ? (resolveProvider({ entries, names, value: args.provider }) ?? args.provider)
+      : await prompts.select({
+          message: "Select provider",
+          options: entries.map((x) => ({
+            label: formatProviderLabel({ id: x.id, name: names[x.id] }),
+            value: x.id,
+          })),
+        })
+    if (provider === invalid) process.exit(1)
+    if (prompts.isCancel(provider)) throw new UI.CancelledError()
+    const entry = entries.find((x) => x.id === provider)
+    if (!entry) {
+      prompts.log.error(`No credentials found for ${provider}`)
+      process.exit(1)
+    }
+    const profile = args.profile ?? (await promptProfile({ entry, message: "Select profile" }))
+    if (profile === all) {
+      prompts.log.error(`Unknown profile "All profiles" for ${provider}`)
+      process.exit(1)
+    }
+    if (!hasProfile({ profiles: entry.profiles, value: profile })) {
+      prompts.log.error(`Unknown profile \"${profile}\" for ${provider}`)
+      process.exit(1)
+    }
+    await Auth.activate(provider, profile)
+    prompts.outro(`Switched ${provider} to ${profile}`)
+  },
+})
+
 export const ProvidersLogoutCommand = cmd({
   command: "logout",
   describe: "log out from a configured provider",
-  async handler(_args) {
+  builder: (yargs) =>
+    yargs
+      .option("provider", {
+        alias: ["p"],
+        describe: "provider id to remove",
+        type: "string",
+      })
+      .option("profile", {
+        describe: "profile name to remove",
+        type: "string",
+      })
+      .option("all", {
+        describe: "remove all profiles for the provider",
+        type: "boolean",
+        default: false,
+      }),
+  async handler(args) {
     UI.empty()
-    const credentials = await Auth.all().then((x) => Object.entries(x))
+    const mode = getLogoutMode({
+      total: 0,
+      profile: args.profile,
+      all: args.all,
+    })
+    if (mode === "invalid") {
+      prompts.log.error("Cannot combine --all with --profile")
+      return
+    }
+    const credentials = await getEntries()
     prompts.intro("Remove credential")
     if (credentials.length === 0) {
       prompts.log.error("No credentials found")
       return
     }
+    const config = await Config.get()
     const database = await ModelsDev.get()
-    const providerID = await prompts.select({
-      message: "Select provider",
-      options: credentials.map(([key, value]) => ({
-        label: (database[key]?.name || key) + UI.Style.TEXT_DIM + " (" + value.type + ")",
-        value: key,
-      })),
+    const names = getProviderNames({ database, config })
+    const provider = args.provider
+      ? (resolveProvider({ entries: credentials, names, value: args.provider }) ?? args.provider)
+      : await prompts.select({
+          message: "Select provider",
+          options: credentials.map((x) => ({
+            label: formatProviderLabel({ id: x.id, name: names[x.id] }),
+            value: x.id,
+          })),
+        })
+    if (provider === invalid) process.exit(1)
+    if (prompts.isCancel(provider)) throw new UI.CancelledError()
+    const entry = credentials.find((x) => x.id === provider)
+    if (!entry) {
+      prompts.log.error(`No credentials found for ${provider}`)
+      process.exit(1)
+    }
+    const next = getLogoutMode({
+      total: entry.profiles.length,
+      profile: args.profile,
+      all: args.all,
     })
-    if (prompts.isCancel(providerID)) throw new UI.CancelledError()
-    await Auth.remove(providerID)
+    const profile =
+      next === "profile"
+        ? args.profile!
+        : next === "prompt"
+          ? await promptProfile({
+              entry,
+              message: "Select profile to remove",
+              includeAll: true,
+            })
+          : undefined
+
+    if (profile === all) {
+      await Auth.remove(provider)
+      prompts.outro("Logout successful")
+      return
+    }
+    if (profile) {
+      if (!hasProfile({ profiles: entry.profiles, value: profile })) {
+        prompts.log.error(`Unknown profile \"${profile}\" for ${provider}`)
+        process.exit(1)
+      }
+      await Auth.removeProfile(provider, profile)
+      prompts.outro(`Removed ${provider}/${profile}`)
+      return
+    }
+    await Auth.remove(provider)
     prompts.outro("Logout successful")
   },
 })

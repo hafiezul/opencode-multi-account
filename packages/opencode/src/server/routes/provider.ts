@@ -10,8 +10,60 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Log } from "../../util/log"
+import { Auth } from "../../auth"
 
 const log = Log.create({ service: "server" })
+const Profile = z.object({
+  active: z.string(),
+  names: z.array(z.string()),
+})
+
+const PublicModel = Provider.Model.omit({
+  options: true,
+  headers: true,
+})
+
+const PublicProvider = z.object({
+  id: ProviderID.zod,
+  name: z.string(),
+  env: z.array(z.string()),
+  models: z.record(z.string(), PublicModel),
+})
+
+function publicProvider(item: Provider.Info) {
+  return {
+    id: item.id,
+    name: item.name,
+    env: item.env,
+    models: mapValues(item.models, (model) => ({
+      id: model.id,
+      providerID: model.providerID,
+      api: model.api,
+      name: model.name,
+      family: model.family,
+      capabilities: model.capabilities,
+      cost: model.cost,
+      limit: model.limit,
+      status: model.status,
+      release_date: model.release_date,
+      ...(model.variants ? { variants: model.variants } : {}),
+    })),
+  }
+}
+
+async function profile(ids: string[]) {
+  return Object.fromEntries(
+    (
+      await Promise.all(
+        ids.map(async (id) => {
+          const item = await Auth.entry(id)
+          if (!item?.active) return []
+          return [[id, { active: item.active, names: Object.keys(item.profiles).sort() }] as const]
+        }),
+      )
+    ).flat(),
+  )
+}
 
 export const ProviderRoutes = lazy(() =>
   new Hono()
@@ -28,9 +80,10 @@ export const ProviderRoutes = lazy(() =>
               "application/json": {
                 schema: resolver(
                   z.object({
-                    all: Provider.Info.array(),
+                    all: PublicProvider.array(),
                     default: z.record(z.string(), z.string()),
                     connected: z.array(z.string()),
+                    profile: z.record(z.string(), Profile),
                   }),
                 ),
               },
@@ -56,10 +109,53 @@ export const ProviderRoutes = lazy(() =>
           mapValues(filteredProviders, (x) => Provider.fromModelsDevProvider(x)),
           connected,
         )
+        const ids = Object.keys(connected)
         return c.json({
-          all: Object.values(providers),
+          all: Object.values(providers).map(publicProvider),
           default: mapValues(providers, (item) => Provider.sort(Object.values(item.models))[0].id),
-          connected: Object.keys(connected),
+          connected: ids,
+          profile: await profile(ids),
+        })
+      },
+    )
+    .post(
+      "/:providerID/activate",
+      describeRoute({
+        summary: "Activate provider profile",
+        description: "Switch the active auth profile for a provider.",
+        operationId: "provider.activate",
+        responses: {
+          200: {
+            description: "Active provider profile",
+            content: {
+              "application/json": {
+                schema: resolver(Profile),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          providerID: z.string().meta({ description: "Provider ID" }),
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          profile: z.string().meta({ description: "Profile name" }),
+        }),
+      ),
+      async (c) => {
+        const providerID = c.req.valid("param").providerID
+        const profileName = c.req.valid("json").profile
+        await Auth.activate(providerID, profileName)
+        const item = await Auth.entry(providerID)
+        return c.json({
+          active: item!.active!,
+          names: Object.keys(item!.profiles).sort(),
         })
       },
     )

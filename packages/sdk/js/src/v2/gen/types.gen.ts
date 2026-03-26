@@ -4215,15 +4215,132 @@ export type ProviderListResponses = {
    * List of providers
    */
   200: {
-    all: Array<Provider>
+    all: Array<{
+      name: string
+      env: Array<string>
+      id: string
+      models: {
+        [key: string]: {
+          id: string
+          providerID: string
+          api: {
+            id: string
+            url: string
+            npm: string
+          }
+          name: string
+          family?: string
+          capabilities: {
+            temperature: boolean
+            reasoning: boolean
+            attachment: boolean
+            toolcall: boolean
+            input: {
+              text: boolean
+              audio: boolean
+              image: boolean
+              video: boolean
+              pdf: boolean
+            }
+            output: {
+              text: boolean
+              audio: boolean
+              image: boolean
+              video: boolean
+              pdf: boolean
+            }
+            interleaved:
+              | boolean
+              | {
+                  field: "reasoning_content" | "reasoning_details"
+                }
+          }
+          cost: {
+            input: number
+            output: number
+            cache: {
+              read: number
+              write: number
+            }
+            experimentalOver200K?: {
+              input: number
+              output: number
+              cache: {
+                read: number
+                write: number
+              }
+            }
+          }
+          limit: {
+            context: number
+            input?: number
+            output: number
+          }
+          status: "alpha" | "beta" | "deprecated" | "active"
+          release_date: string
+          variants?: {
+            [key: string]: {
+              [key: string]: unknown
+            }
+          }
+        }
+      }
+    }>
     default: {
       [key: string]: string
     }
     connected: Array<string>
+    profile: {
+      [key: string]: {
+        active: string
+        names: Array<string>
+      }
+    }
   }
 }
 
 export type ProviderListResponse = ProviderListResponses[keyof ProviderListResponses]
+
+export type ProviderActivateData = {
+  body?: {
+    /**
+     * Profile name
+     */
+    profile: string
+  }
+  path: {
+    /**
+     * Provider ID
+     */
+    providerID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/{providerID}/activate"
+}
+
+export type ProviderActivateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderActivateError = ProviderActivateErrors[keyof ProviderActivateErrors]
+
+export type ProviderActivateResponses = {
+  /**
+   * Active provider profile
+   */
+  200: {
+    active: string
+    names: Array<string>
+  }
+}
+
+export type ProviderActivateResponse = ProviderActivateResponses[keyof ProviderActivateResponses]
 
 export type ProviderAuthData = {
   body?: never

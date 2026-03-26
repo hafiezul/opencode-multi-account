@@ -139,10 +139,27 @@ export namespace Config {
     return merged
   }
 
-  export type InstallInput = {
-    signal?: AbortSignal
-    waitTick?: (input: { dir: string; attempt: number; delay: number; waited: number }) => void | Promise<void>
+  type Restore = Map<string, string | undefined>
+
+  function apply(restore: Restore, key: string, value: string) {
+    if (!restore.has(key)) restore.set(key, Env.get(key))
+    Env.set(key, value)
   }
+
+  function undo(restore: Restore) {
+    for (const [key, value] of restore) {
+      if (value === undefined) Env.remove(key)
+      else Env.set(key, value)
+    }
+  }
+
+  export async function revision() {
+    const active = await Account.active()
+    return [Auth.revision(), active?.id ?? "", active?.active_org_id ?? ""].join(":")
+  }
+  export async function installDependencies(dir: string) {
+    const pkg = path.join(dir, "package.json")
+    const targetVersion = Installation.isLocal() ? "*" : Installation.VERSION
 
   export async function installDependencies(dir: string, input?: InstallInput) {
     if (!(await isWritable(dir))) return
@@ -1317,6 +1334,10 @@ export namespace Config {
         })
 
         const loadInstanceState = Effect.fnUntraced(function* (ctx: InstanceContext) {
+          const restore = yield* Effect.acquireRelease(
+            Effect.sync(() => new Map<string, string | undefined>()),
+            (restore) => Effect.sync(() => undo(restore)),
+          )
           const auth = yield* authSvc.all().pipe(Effect.orDie)
 
           let result: Info = {}
@@ -1349,7 +1370,7 @@ export namespace Config {
           for (const [key, value] of Object.entries(auth)) {
             if (value.type === "wellknown") {
               const url = key.replace(/\/+$/, "")
-              process.env[value.key] = value.token
+              apply(restore, value.key, value.token)
               log.debug("fetching remote config", { url: `${url}/.well-known/opencode` })
               const response = yield* Effect.promise(() => fetch(`${url}/.well-known/opencode`))
               if (!response.ok) {
@@ -1423,13 +1444,15 @@ export namespace Config {
             track(dir, list)
           }
 
-          if (process.env.OPENCODE_CONFIG_CONTENT) {
-            const source = "OPENCODE_CONFIG_CONTENT"
-            const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
-              dir: ctx.directory,
-              source,
-            })
-            merge(source, next, "local")
+          const content = Env.get("OPENCODE_CONFIG_CONTENT") ?? process.env.OPENCODE_CONFIG_CONTENT
+          if (content) {
+            result = mergeConfigConcatArrays(
+              result,
+              yield* loadConfig(content, {
+                dir: ctx.directory,
+                source: "OPENCODE_CONFIG_CONTENT",
+              }),
+            )
             log.debug("loaded custom config from OPENCODE_CONFIG_CONTENT")
           }
 
@@ -1442,10 +1465,8 @@ export namespace Config {
                 [accountSvc.config(activeOrg.account.id, activeOrg.org.id), accountSvc.token(activeOrg.account.id)],
                 { concurrency: 2 },
               )
-              if (Option.isSome(tokenOpt)) {
-                process.env["OPENCODE_CONSOLE_TOKEN"] = tokenOpt.value
-                Env.set("OPENCODE_CONSOLE_TOKEN", tokenOpt.value)
-              }
+              const token = Option.getOrUndefined(tokenOpt)
+              if (token) apply(restore, "OPENCODE_CONSOLE_TOKEN", token)
 
               activeOrgName = activeOrg.org.name
 

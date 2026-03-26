@@ -50,6 +50,28 @@ export function DialogStatus() {
           esc
         </text>
       </box>
+      <Show when={sync.data.provider.length > 0} fallback={<text fg={theme.text}>No Providers</text>}>
+        <box>
+          <text fg={theme.text}>{sync.data.provider.length} Providers</text>
+          <For each={sync.data.provider}>
+            {(item) => (
+              <box flexDirection="row" gap={1}>
+                <text flexShrink={0} style={{ fg: theme.success }}>
+                  •
+                </text>
+                <text fg={theme.text} wrapMode="word">
+                  <b>{item.name}</b>{" "}
+                  <span style={{ fg: theme.textMuted }}>
+                    {sync.data.provider_next.profile[item.id]?.active
+                      ? `${sync.data.provider_next.profile[item.id]!.active} profile`
+                      : "Connected"}
+                  </span>
+                </text>
+              </box>
+            )}
+          </For>
+        </box>
+      </Show>
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>
           <text fg={theme.text}>{Object.keys(sync.data.mcp).length} MCP Servers</text>
