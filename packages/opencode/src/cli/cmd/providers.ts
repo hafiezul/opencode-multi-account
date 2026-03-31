@@ -71,6 +71,59 @@ async function saveAuth(provider: string, info: Auth.Info, profile?: string) {
   await Auth.activate(provider, profile)
 }
 
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string"
+}
+
+function normalizeHttpUrl(value: string) {
+  try {
+    const url = new URL(value)
+    if (!["http:", "https:"].includes(url.protocol)) return
+    url.search = ""
+    url.hash = ""
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/"
+    return url
+  } catch {
+    return
+  }
+}
+
+function formatHttpUrl(url: URL) {
+  return url.pathname === "/" ? url.origin : `${url.origin}${url.pathname}`
+}
+
+function getWellKnownUrl(url: URL) {
+  const meta = new URL(url)
+  meta.pathname = `${url.pathname.endsWith("/") ? url.pathname : `${url.pathname}/`}.well-known/opencode`
+  return meta
+}
+
+function parseWellKnownAuth(value: unknown) {
+  if (!isRecord(value) || !isRecord(value.auth)) return
+  const command =
+    Array.isArray(value.auth.command) && value.auth.command.every(isString) ? value.auth.command : undefined
+  if (!command?.length || command.some((x) => x.trim() === "")) return
+  const env = typeof value.auth.env === "string" ? value.auth.env.trim() : ""
+  if (!env) return
+  return { command, env }
+}
+
+async function getWellKnownAuth(url: URL) {
+  const meta = getWellKnownUrl(url)
+  const res = await fetch(meta).catch(() => undefined)
+  if (!res?.ok) return
+  const json = await res.json().catch(() => undefined)
+  return parseWellKnownAuth(json)
+}
+
 function matchProvider(input: { options: Array<{ label: string; value: string }>; value: string }) {
   const byID = input.options.find((x) => x.value === input.value)
   const byName = input.options.find((x) => x.label.toLowerCase() === input.value.toLowerCase())
@@ -150,11 +203,9 @@ async function getEntries(provider?: string): Promise<Entry[]> {
   ).then((x) => x.flatMap((item) => (item ? [item] : [])))
 }
 
-async function promptProfile(input: {
-  entry: Entry
-  message: string
-  includeAll?: boolean
-}): Promise<string | typeof all> {
+function promptProfile(input: { entry: Entry; message: string; includeAll: true }): Promise<string | typeof all>
+function promptProfile(input: { entry: Entry; message: string; includeAll?: false | undefined }): Promise<string>
+async function promptProfile(input: { entry: Entry; message: string; includeAll?: boolean }) {
   const extra: { label: string; value: typeof all; hint: string } = {
     label: "All profiles",
     value: all,
@@ -449,7 +500,7 @@ export const ProvidersListCommand = cmd({
 })
 
 export const ProvidersStatusCommand = cmd({
-  command: "status [provider]",
+  command: "status",
   describe: "show provider profile status",
   builder: (yargs) =>
     yargs.option("provider", {
@@ -513,33 +564,50 @@ export const ProvidersLoginCommand = cmd({
       async fn() {
         UI.empty()
         prompts.intro("Add credential")
-        if (args.url) {
-          if (args.profile) prompts.log.warn("Ignoring --profile for URL login")
-          const url = args.url.replace(/\/+$/, "")
-          const wellknown = await fetch(`${url}/.well-known/opencode`).then(
-            (x) => x.json() as Promise<{ auth: { command: string[]; env: string } }>,
-          )
-          prompts.log.info(`Running \`${wellknown.auth.command.join(" ")}\``)
-          const proc = Process.spawn(wellknown.auth.command, {
+        if (args.url && isHttpUrl(args.url)) {
+          const url = normalizeHttpUrl(args.url)
+          if (!url) {
+            prompts.log.error(`Invalid URL: ${args.url}`)
+            prompts.outro("Done")
+            return
+          }
+          const auth = await getWellKnownAuth(url)
+          if (!auth) {
+            prompts.log.error(`Could not load ${getWellKnownUrl(url)}`)
+            prompts.outro("Done")
+            return
+          }
+          prompts.log.info(`Running \`${auth.command.join(" ")}\``)
+          const proc = Process.spawn(auth.command, {
             stdout: "pipe",
           })
           if (!proc.stdout) {
-            prompts.log.error("Failed")
+            prompts.log.error("Auth command did not produce output")
             prompts.outro("Done")
             return
           }
           const [exit, token] = await Promise.all([proc.exited, text(proc.stdout)])
           if (exit !== 0) {
-            prompts.log.error("Failed")
+            prompts.log.error("Auth command failed")
             prompts.outro("Done")
             return
           }
-          await Auth.set(url, {
-            type: "wellknown",
-            key: wellknown.auth.env,
-            token: token.trim(),
-          })
-          prompts.log.success("Logged into " + url)
+          const value = token.trim()
+          if (!value) {
+            prompts.log.error("Auth command returned an empty token")
+            prompts.outro("Done")
+            return
+          }
+          await saveAuth(
+            formatHttpUrl(url),
+            {
+              type: "wellknown",
+              key: auth.env,
+              token: value,
+            },
+            args.profile,
+          )
+          prompts.log.success("Logged into " + formatHttpUrl(url))
           prompts.outro("Done")
           return
         }
@@ -602,21 +670,22 @@ export const ProvidersLoginCommand = cmd({
         ]
 
         let provider: string
-        if (args.provider) {
+        const input = args.provider ?? args.url
+        if (input) {
           const match =
             resolveProvider({
               entries: options.map((x) => ({ id: x.value })),
               names,
-              value: args.provider,
-            }) ?? matchProvider({ options, value: args.provider })?.value
+              value: input,
+            }) ?? matchProvider({ options, value: input })?.value
           if (match === invalid) process.exit(1)
           if (!match) {
-            prompts.log.error(`Unknown provider "${args.provider}"`)
+            prompts.log.error(`Unknown provider "${input}"`)
             process.exit(1)
           }
           provider = match
         } else {
-          const selected = await prompts.autocomplete({
+          const selected = await prompts.autocomplete<string>({
             message: "Select provider",
             maxItems: 8,
             options: [
@@ -628,7 +697,7 @@ export const ProvidersLoginCommand = cmd({
             ],
           })
           if (prompts.isCancel(selected)) throw new UI.CancelledError()
-          provider = selected as string
+          provider = selected
         }
 
         const plugin = await Plugin.list().then((x) => x.findLast((x) => x.auth?.provider === provider))
@@ -741,12 +810,8 @@ export const ProvidersSwitchCommand = cmd({
       process.exit(1)
     }
     const profile = args.profile ?? (await promptProfile({ entry, message: "Select profile" }))
-    if (profile === all) {
-      prompts.log.error(`Unknown profile "All profiles" for ${provider}`)
-      process.exit(1)
-    }
     if (!hasProfile({ profiles: entry.profiles, value: profile })) {
-      prompts.log.error(`Unknown profile \"${profile}\" for ${provider}`)
+      prompts.log.error(`Unknown profile "${profile}" for ${provider}`)
       process.exit(1)
     }
     await Auth.activate(provider, profile)
@@ -832,7 +897,7 @@ export const ProvidersLogoutCommand = cmd({
     }
     if (profile) {
       if (!hasProfile({ profiles: entry.profiles, value: profile })) {
-        prompts.log.error(`Unknown profile \"${profile}\" for ${provider}`)
+        prompts.log.error(`Unknown profile "${profile}" for ${provider}`)
         process.exit(1)
       }
       await Auth.removeProfile(provider, profile)

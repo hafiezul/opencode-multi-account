@@ -85,7 +85,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (agent?.color) {
             const color = agent.color
             if (color.startsWith("#")) return RGBA.fromHex(color)
-            // already validated by config, just satisfying TS here
             return theme[color as keyof typeof theme] as RGBA
           }
           return colors()[index % colors().length]
@@ -138,11 +137,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
       }
 
-      Filesystem.readJson(filePath)
-        .then((x: any) => {
+      Filesystem.readJson<{
+        recent?: { providerID: string; modelID: string }[]
+        favorite?: { providerID: string; modelID: string }[]
+        variant?: Record<string, string | undefined> | null
+      }>(filePath)
+        .then((x) => {
           if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
-          if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
+          if (x.variant && typeof x.variant === "object") setModelStore("variant", x.variant)
         })
         .catch(() => {})
         .finally(() => {
@@ -201,21 +204,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       })
 
-      let invalid = ""
-
       createEffect(() => {
         const name = agent.current().name
         const item = modelStore.model[name]
-        if (!item) {
-          invalid = ""
-          return
-        }
-        if (isModelValid(item)) {
-          invalid = ""
-          return
-        }
-        const key = `${name}:${item.providerID}/${item.modelID}`
-        if (invalid !== key) invalid = key
+        if (!item) return
+        if (isModelValid(item)) return
         setModelStore(
           produce((draft) => {
             delete draft.model[name]
