@@ -17,6 +17,7 @@ import type {
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
+  MonitorSnapshot,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
@@ -35,6 +36,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
     type ProviderItem = ProviderListResponse["all"][number]
+    type MonitorScope = {
+      provider: string
+      profile?: string
+      model: string
+      variant?: string
+    }
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
       provider: ProviderItem[]
@@ -78,6 +85,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       vcs: VcsInfo | undefined
       path: Path
       workspaceList: Workspace[]
+      monitor: Record<string, MonitorSnapshot>
+      monitor_pending: Record<string, boolean>
     }>({
       provider_next: {
         all: [],
@@ -108,9 +117,57 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       vcs: undefined,
       path: { state: "", config: "", worktree: "", directory: "" },
       workspaceList: [],
+      monitor: {},
+      monitor_pending: {},
     })
 
     const sdk = useSDK()
+    const monitor = new Map<string, Promise<MonitorSnapshot | undefined>>()
+    let monitorRev = 0
+
+    function monitorKey(scope: MonitorScope) {
+      return [scope.provider, scope.profile ?? "", scope.model, scope.variant ?? ""].join("\x1f")
+    }
+
+    function clearMonitor() {
+      monitorRev += 1
+      monitor.clear()
+      batch(() => {
+        setStore("monitor", {})
+        setStore("monitor_pending", {})
+      })
+    }
+
+    async function loadMonitor(scope: MonitorScope, refresh?: boolean) {
+      const key = monitorKey(scope)
+      const cached = store.monitor[key]
+      if (!refresh && cached && cached.expires_at > Date.now()) return cached
+      const pending = monitor.get(key)
+      if (pending) return pending
+      setStore("monitor_pending", key, true)
+      const rev = monitorRev
+      const next = sdk.client.provider
+        .monitor({
+          provider: scope.provider,
+          profile: scope.profile,
+          model: scope.model,
+          variant: scope.variant,
+          refresh,
+        })
+        .then((x) => {
+          if (!x.data) return cached
+          if (rev !== monitorRev) return cached
+          setStore("monitor", key, reconcile(x.data))
+          return x.data
+        })
+        .catch(() => cached)
+        .finally(() => {
+          if (monitor.get(key) === next) monitor.delete(key)
+          if (rev === monitorRev) setStore("monitor_pending", key, false)
+        })
+      monitor.set(key, next)
+      return next
+    }
 
     async function syncWorkspaces() {
       const result = await sdk.client.experimental.workspace.list().catch(() => undefined)
@@ -122,6 +179,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const event = e.details
       switch (event.type) {
         case "server.instance.disposed":
+          clearMonitor()
           bootstrap()
           break
         case "permission.replied": {
@@ -362,6 +420,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     async function bootstrap() {
       console.log("bootstrapping")
+      clearMonitor()
       const start = Date.now() - 30 * 24 * 60 * 60 * 1000
       const sessionListPromise = sdk.client.session
         .list({ start: start })
@@ -508,6 +567,23 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return store.workspaceList.find((workspace) => workspace.id === workspaceID)
         },
         sync: syncWorkspaces,
+      },
+      monitor: {
+        get(scope: MonitorScope) {
+          return store.monitor[monitorKey(scope)]
+        },
+        pending(scope: MonitorScope) {
+          return !!store.monitor_pending[monitorKey(scope)]
+        },
+        ensure(scope: MonitorScope) {
+          const cached = store.monitor[monitorKey(scope)]
+          if (cached && cached.expires_at > Date.now()) return cached
+          void loadMonitor(scope)
+          return cached
+        },
+        refresh(scope: MonitorScope) {
+          return loadMonitor(scope, true)
+        },
       },
       bootstrap,
     }

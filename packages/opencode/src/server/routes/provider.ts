@@ -5,12 +5,13 @@ import { Config } from "../../config/config"
 import { Provider } from "../../provider/provider"
 import { ModelsDev } from "../../provider/models"
 import { ProviderAuth } from "../../provider/auth"
-import { ProviderID } from "../../provider/schema"
+import { ModelID, ProviderID } from "../../provider/schema"
 import { mapValues } from "remeda"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Log } from "../../util/log"
 import { Auth } from "../../auth"
+import { Monitor } from "../../monitor"
 
 const log = Log.create({ service: "server" })
 const Profile = z.object({
@@ -157,6 +158,46 @@ export const ProviderRoutes = lazy(() =>
           active: item!.active!,
           names: Object.keys(item!.profiles).sort(),
         })
+      },
+    )
+    .get(
+      "/monitor",
+      describeRoute({
+        summary: "Get provider monitor snapshot",
+        description: "Retrieve a normalized monitor snapshot for a provider/profile/model scope.",
+        operationId: "provider.monitor",
+        responses: {
+          200: {
+            description: "Normalized monitor snapshot",
+            content: {
+              "application/json": {
+                schema: resolver(Monitor.Snapshot),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          provider: ProviderID.zod.meta({ description: "Provider ID" }),
+          profile: z.string().optional().meta({ description: "Provider profile" }),
+          model: ModelID.zod.meta({ description: "Model ID" }),
+          variant: z.string().optional().meta({ description: "Model variant" }),
+          refresh: z.coerce.boolean().optional().meta({ description: "Force refresh" }),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        return c.json(
+          await Monitor.get({
+            provider: query.provider,
+            profile: query.profile,
+            model: query.model,
+            variant: query.variant,
+          }),
+        )
       },
     )
     .get(

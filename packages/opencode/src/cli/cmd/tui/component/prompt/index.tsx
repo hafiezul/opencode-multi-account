@@ -831,6 +831,40 @@ export function Prompt(props: PromptProps) {
     if (!id) return
     return sync.data.provider_next.profile[id]?.active
   })
+  const monitorScope = createMemo(() => {
+    const model = local.model.current()
+    if (!model) return
+    return {
+      provider: model.providerID,
+      profile: profile(),
+      model: model.modelID,
+      variant: local.model.variant.current(),
+    }
+  })
+  const monitor = createMemo(() => {
+    const scope = monitorScope()
+    if (!scope) return
+    return sync.monitor.get(scope)
+  })
+  const monitorLabel = createMemo(() => {
+    const snap = monitor()
+    if (!snap) return
+    if (snap.state === "estimated") return "est"
+    return snap.state
+  })
+  const monitorColor = createMemo(() => {
+    const snap = monitor()
+    if (!snap) return theme.textMuted
+    if (snap.state === "live") return theme.success
+    if (snap.state === "estimated") return theme.warning
+    return theme.textMuted
+  })
+
+  createEffect(() => {
+    const scope = monitorScope()
+    if (!scope || store.mode === "shell") return
+    sync.monitor.ensure(scope)
+  })
 
   const placeholderText = createMemo(() => {
     if (props.showPlaceholder === false) return undefined
@@ -1115,6 +1149,10 @@ export function Prompt(props: PromptProps) {
                   <Show when={profile()}>
                     <text fg={theme.textMuted}>·</text>
                     <text fg={theme.text}>{profile()}</text>
+                  </Show>
+                  <Show when={monitorLabel()}>
+                    <text fg={theme.textMuted}>·</text>
+                    <text fg={monitorColor()}>{monitorLabel()}</text>
                   </Show>
                 </>
               </Show>

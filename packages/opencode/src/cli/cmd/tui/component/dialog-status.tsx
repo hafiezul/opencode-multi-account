@@ -3,12 +3,33 @@ import { fileURLToPath } from "bun"
 import { useTheme } from "../context/theme"
 import { useDialog } from "@tui/ui/dialog"
 import { useSync } from "@tui/context/sync"
+import { useLocal } from "@tui/context/local"
+import { useKeyboard } from "@opentui/solid"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
+import { Locale } from "@/util/locale"
 
 export type DialogStatusProps = {}
 
+function ago(time?: number) {
+  if (!time) return "—"
+  const diff = Date.now() - time
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  if (seconds < 60) return "just now"
+  if (minutes < 60) return `${minutes}m ago`
+  if (hours < 24) return `${hours}h ago`
+  return Locale.datetime(time)
+}
+
+function money(value?: number) {
+  if (value === undefined) return "—"
+  return `$${value.toFixed(4)}`
+}
+
 export function DialogStatus() {
   const sync = useSync()
+  const local = useLocal()
   const { theme } = useTheme()
   const dialog = useDialog()
 
@@ -38,6 +59,40 @@ export function DialogStatus() {
       return { name, version }
     })
     return result.toSorted((a, b) => a.name.localeCompare(b.name))
+  })
+  const scope = createMemo(() => {
+    const model = local.model.current()
+    if (!model) return
+    return {
+      provider: model.providerID,
+      profile: sync.data.provider_next.profile[model.providerID]?.active,
+      model: model.modelID,
+      variant: local.model.variant.current(),
+    }
+  })
+  const monitor = createMemo(() => {
+    const next = scope()
+    if (!next) return
+    return sync.monitor.ensure(next)
+  })
+  const monitorColor = createMemo(() => {
+    const snap = monitor()
+    if (!snap) return theme.textMuted
+    if (snap.state === "live") return theme.success
+    if (snap.state === "estimated") return theme.warning
+    return theme.textMuted
+  })
+
+  const refresh = async () => {
+    const next = scope()
+    if (!next) return
+    await sync.monitor.refresh(next)
+  }
+
+  useKeyboard((evt) => {
+    if (evt.name === "r" && !evt.ctrl && !evt.meta) {
+      void refresh()
+    }
   })
 
   return (
@@ -70,6 +125,59 @@ export function DialogStatus() {
               </box>
             )}
           </For>
+        </box>
+      </Show>
+      <Show when={scope()} fallback={<text fg={theme.text}>No Monitor Scope</text>}>
+        <box>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={theme.text}>Monitor</text>
+            <text
+              fg={sync.monitor.pending(scope()!) ? theme.warning : theme.textMuted}
+              onMouseUp={() => void refresh()}
+            >
+              {sync.monitor.pending(scope()!) ? "refreshing..." : "r refresh"}
+            </text>
+          </box>
+          <Show when={monitor()} fallback={<text fg={theme.textMuted}>Loading monitor snapshot...</text>}>
+            {(snap) => (
+              <box flexDirection="column">
+                <text fg={theme.text}>
+                  state <span style={{ fg: monitorColor(), bold: true }}>{snap().state}</span>
+                  <span style={{ fg: theme.textMuted }}> · {snap().source}</span>
+                </text>
+                <text fg={theme.textMuted} wrapMode="word">
+                  {snap().scope.provider}/{snap().scope.model}
+                  {snap().scope.variant ? ` · ${snap().scope.variant}` : ""}
+                  {snap().scope.profile ? ` · ${snap().scope.profile}` : ""}
+                </text>
+                <text fg={theme.textMuted}>last refresh {ago(snap().fetched_at)}</text>
+                <Show when={snap().window}>
+                  <text fg={theme.textMuted}>window {snap().window!.label}</text>
+                </Show>
+                <Show when={snap().usage?.requests?.used !== undefined}>
+                  <text fg={theme.text}>requests {snap().usage?.requests?.used?.toLocaleString()}</text>
+                </Show>
+                <Show when={snap().usage?.tokens?.used !== undefined}>
+                  <text fg={theme.text}>tokens {snap().usage?.tokens?.used?.toLocaleString()}</text>
+                </Show>
+                <Show when={snap().usage?.cost?.used !== undefined}>
+                  <text fg={theme.text}>cost {money(snap().usage?.cost?.used)}</text>
+                </Show>
+                <Show when={snap().message}>
+                  <text fg={theme.textMuted} wrapMode="word">
+                    {snap().message}
+                  </text>
+                </Show>
+                <For each={snap().notes ?? []}>
+                  {(item) => (
+                    <text fg={theme.textMuted} wrapMode="word">
+                      • {item}
+                    </text>
+                  )}
+                </For>
+              </box>
+            )}
+          </Show>
         </box>
       </Show>
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>

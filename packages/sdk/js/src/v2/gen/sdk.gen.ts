@@ -87,10 +87,12 @@ import type {
   ProjectListResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
-  ProviderAuthResponses,
   ProviderActivateErrors,
   ProviderActivateResponses,
+  ProviderAuthResponses,
   ProviderListResponses,
+  ProviderMonitorErrors,
+  ProviderMonitorResponses,
   ProviderOauthAuthorizeErrors,
   ProviderOauthAuthorizeResponses,
   ProviderOauthCallbackErrors,
@@ -2883,10 +2885,10 @@ export class Provider extends HeyApiClient {
    */
   public activate<ThrowOnError extends boolean = false>(
     parameters: {
+      providerID: string
       directory?: string
       workspace?: string
-      providerID: string
-      profile: string
+      profile?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2895,9 +2897,9 @@ export class Provider extends HeyApiClient {
       [
         {
           args: [
+            { in: "path", key: "providerID" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
-            { in: "path", key: "providerID" },
             { in: "body", key: "profile" },
           ],
         },
@@ -2912,6 +2914,46 @@ export class Provider extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Get provider monitor snapshot
+   *
+   * Retrieve a normalized monitor snapshot for a provider/profile/model scope.
+   */
+  public monitor<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      provider: string
+      profile?: string
+      model: string
+      variant?: string
+      refresh?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "provider" },
+            { in: "query", key: "profile" },
+            { in: "query", key: "model" },
+            { in: "query", key: "variant" },
+            { in: "query", key: "refresh" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProviderMonitorResponses, ProviderMonitorErrors, ThrowOnError>({
+      url: "/provider/monitor",
+      ...options,
+      ...params,
     })
   }
 

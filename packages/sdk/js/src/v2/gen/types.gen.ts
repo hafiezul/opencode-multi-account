@@ -1881,6 +1881,49 @@ export type SubtaskPartInput = {
   command?: string
 }
 
+export type MonitorScope = {
+  provider: string
+  profile?: string
+  model: string
+  variant?: string
+}
+
+export type MonitorWindow = {
+  label: string
+  start?: number
+  end?: number
+}
+
+export type MonitorUsageCount = {
+  used?: number
+  limit?: number
+}
+
+export type MonitorUsageCost = {
+  used?: number
+  limit?: number
+  currency?: string
+}
+
+export type MonitorUsage = {
+  requests?: MonitorUsageCount
+  tokens?: MonitorUsageCount
+  cost?: MonitorUsageCost
+}
+
+export type MonitorSnapshot = {
+  scope: MonitorScope
+  state: "live" | "estimated" | "unknown"
+  fetched_at: number
+  expires_at: number
+  source: "provider" | "history" | "none"
+  window?: MonitorWindow
+  usage?: MonitorUsage
+  reset_at?: number
+  message?: string
+  notes?: Array<string>
+}
+
 export type ProviderAuthMethod = {
   type: "oauth" | "api"
   label: string
@@ -4216,9 +4259,9 @@ export type ProviderListResponses = {
    */
   200: {
     all: Array<{
+      id: string
       name: string
       env: Array<string>
-      id: string
       models: {
         [key: string]: {
           id: string
@@ -4341,6 +4384,54 @@ export type ProviderActivateResponses = {
 }
 
 export type ProviderActivateResponse = ProviderActivateResponses[keyof ProviderActivateResponses]
+
+export type ProviderMonitorData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    /**
+     * Provider ID
+     */
+    provider: string
+    /**
+     * Provider profile
+     */
+    profile?: string
+    /**
+     * Model ID
+     */
+    model: string
+    /**
+     * Model variant
+     */
+    variant?: string
+    /**
+     * Force refresh
+     */
+    refresh?: boolean
+  }
+  url: "/provider/monitor"
+}
+
+export type ProviderMonitorErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderMonitorError = ProviderMonitorErrors[keyof ProviderMonitorErrors]
+
+export type ProviderMonitorResponses = {
+  /**
+   * Normalized monitor snapshot
+   */
+  200: MonitorSnapshot
+}
+
+export type ProviderMonitorResponse = ProviderMonitorResponses[keyof ProviderMonitorResponses]
 
 export type ProviderAuthData = {
   body?: never
