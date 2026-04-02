@@ -115,7 +115,7 @@ Add a minimal monitor service and normalized snapshot model. Show an inline badg
 
 This phase should be useful even if many providers only return `unknown`. The value is shared plumbing, clear labeling, and a visible place for future provider support.
 
-Status: shipped with local-history estimation only.
+Status: shipped and verified, with one backend refresh mismatch fixed during phase 2 work.
 
 What shipped:
 
@@ -125,6 +125,7 @@ What shipped:
 - `estimated` and `unknown` states from local assistant-message history only, with no live provider adapters yet
 - 5 minute TTL via `fetched_at` and `expires_at`
 - stale-while-revalidate owned by the TUI sync cache for the prompt badge, plus manual refresh support
+- backend manual refresh now correctly bypasses backend cache instead of only accepting the `refresh` query
 - compact state badge in the prompt tuple
 - `/status` Monitor section with scope, state, source, refresh time, window, summary numbers, message or notes, and manual refresh via mouse or `r`
 - estimate window set to `Last 24h`
@@ -133,8 +134,8 @@ What shipped:
 Known limits and continuation notes:
 
 - history is not persisted by profile or account, so estimates are blended across profiles for shared provider and model pairs
-- provider source is still local-only phase 1 data, so no `live` state is available yet
-- phase 2 should add provider adapters behind the existing normalized snapshot contract
+- phase 1 originally accepted `refresh` on `/provider/monitor` but did not pass it into `Monitor.get`, so backend manual refresh did not fully bypass backend state until phase 2 fixed it
+- normalized snapshot contract remains stable for provider adapters
 - phase 2 should keep `/status` copy and notes clear when provider data is partial or unavailable
 - phase 3 should add profile or account attribution to persisted history before treating estimates as trustworthy for multi-account setups
 
@@ -143,6 +144,25 @@ Known limits and continuation notes:
 Add provider-specific live adapters where practical. Start with providers that already expose quota, credit, or rate-limit metadata with low implementation risk.
 
 Improve `/status` copy for mixed states and provider-specific caveats. Keep the normalized UI contract stable.
+
+Status: shipped with a verified live adapter for OpenRouter.
+
+What shipped:
+
+- normalized snapshot contract stayed stable
+- backend monitor cache still uses a 5 minute TTL
+- `refresh` on `/provider/monitor` now bypasses backend cache
+- OpenRouter live data uses official `GET /api/v1/key`
+- OpenRouter can now return `live` data when that response is available and well formed
+- live OpenRouter data is key-wide, not model-specific, so it may include other models or variants on the same profile or key
+- if OpenRouter live data is unavailable or malformed, the service falls back to local history as `estimated` or to `unknown`
+- `/status` copy and notes are clearer about provider caveats and live to fallback behavior
+
+Known limits and continuation notes:
+
+- only OpenRouter has a live adapter so far
+- history is still not attributed by profile or account, so estimates remain blended for shared provider and model pairs
+- OpenRouter live data is still broader than tuple-specific model or variant usage
 
 ### Phase 3
 
@@ -166,7 +186,6 @@ Provider semantics will vary. Some limits are spend-based, some are request-base
 
 Open questions:
 
-- which providers can return live data without extra auth scope or expensive calls?
 - should the inline badge prefer text only, color only, or both?
 - should refresh happen only on demand plus TTL, or also on profile/model switch?
 - where should provider-specific caveats live in the normalized model?

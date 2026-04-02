@@ -191,12 +191,15 @@ export const ProviderRoutes = lazy(() =>
       async (c) => {
         const query = c.req.valid("query")
         return c.json(
-          await Monitor.get({
-            provider: query.provider,
-            profile: query.profile,
-            model: query.model,
-            variant: query.variant,
-          }),
+          await Monitor.get(
+            {
+              provider: query.provider,
+              profile: query.profile,
+              model: query.model,
+              variant: query.variant,
+            },
+            { refresh: query.refresh },
+          ),
         )
       },
     )
