@@ -15,13 +15,19 @@ import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { NotFoundError } from "@/storage/db"
 import { ModelID, ProviderID } from "@/provider/schema"
-import { Effect, Layer, ServiceMap } from "effect"
-import { makeRuntime } from "@/effect/run-service"
-import { InstanceState } from "@/effect/instance-state"
-import { isOverflow as overflow } from "./overflow"
+import { Auth } from "@/auth"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
+
+  async function auth(providerID: ProviderID) {
+    const ctx = await Auth.resolve(providerID)
+    if (!ctx.profile) return
+    return {
+      profile: ctx.profile,
+      accountID: ctx.accountID,
+    }
+  }
 
   export const Event = {
     Compacted: BusEvent.define(
@@ -126,67 +132,50 @@ export namespace SessionCompaction {
           }
         }
 
-        log.info("found", { pruned, total })
-        if (pruned > PRUNE_MINIMUM) {
-          for (const part of toPrune) {
-            if (part.state.status === "completed") {
-              part.state.time.compacted = Date.now()
-              yield* session.updatePart(part)
-            }
-          }
-          log.info("pruned", { count: toPrune.length })
-        }
-      })
-
-      const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
-        parentID: MessageID
-        messages: MessageV2.WithParts[]
-        sessionID: SessionID
-        auto: boolean
-        overflow?: boolean
-      }) {
-        const parent = input.messages.findLast((m) => m.info.id === input.parentID)
-        if (!parent || parent.info.role !== "user") {
-          throw new Error(`Compaction parent must be a user message: ${input.parentID}`)
-        }
-        const userMessage = parent.info
-
-        let messages = input.messages
-        let replay:
-          | {
-              info: MessageV2.User
-              parts: MessageV2.Part[]
-            }
-          | undefined
-        if (input.overflow) {
-          const idx = input.messages.findIndex((m) => m.info.id === input.parentID)
-          for (let i = idx - 1; i >= 0; i--) {
-            const msg = input.messages[i]
-            if (msg.info.role === "user" && !msg.parts.some((p) => p.type === "compaction")) {
-              replay = { info: msg.info, parts: msg.parts }
-              messages = input.messages.slice(0, i)
-              break
-            }
-          }
-          const hasContent =
-            replay && messages.some((m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"))
-          if (!hasContent) {
-            replay = undefined
-            messages = input.messages
-          }
-        }
-
-        const agent = yield* agents.get("compaction")
-        const model = agent.model
-          ? yield* provider.getModel(agent.model.providerID, agent.model.modelID)
-          : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID)
-        // Allow plugins to inject context or replace compaction prompt.
-        const compacting = yield* plugin.trigger(
-          "experimental.session.compacting",
-          { sessionID: input.sessionID },
-          { context: [], prompt: undefined },
-        )
-        const defaultPrompt = `Provide a detailed prompt for continuing our conversation above.
+    const agent = await Agent.get("compaction")
+    const model = agent.model
+      ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
+      : await Provider.getModel(userMessage.model.providerID, userMessage.model.modelID)
+    const msg = (await Session.updateMessage({
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: input.parentID,
+      sessionID: input.sessionID,
+      mode: "compaction",
+      agent: "compaction",
+      variant: userMessage.variant,
+      summary: true,
+      path: {
+        cwd: Instance.directory,
+        root: Instance.worktree,
+      },
+      cost: 0,
+      tokens: {
+        output: 0,
+        input: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+      modelID: model.id,
+      providerID: model.providerID,
+      auth: await auth(model.providerID),
+      time: {
+        created: Date.now(),
+      },
+    })) as MessageV2.Assistant
+    const processor = SessionProcessor.create({
+      assistantMessage: msg,
+      sessionID: input.sessionID,
+      model,
+      abort: input.abort,
+    })
+    // Allow plugins to inject context or replace compaction prompt
+    const compacting = await Plugin.trigger(
+      "experimental.session.compacting",
+      { sessionID: input.sessionID },
+      { context: [], prompt: undefined },
+    )
+    const defaultPrompt = `Provide a detailed prompt for continuing our conversation above.
 Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next.
 The summary that you construct will be used so that another agent can read it and continue the work.
 Do not call any tools. Respond only with the summary text.

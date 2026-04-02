@@ -420,6 +420,12 @@ export namespace MessageV2 {
     parentID: MessageID.zod,
     modelID: ModelID.zod,
     providerID: ProviderID.zod,
+    auth: z
+      .object({
+        profile: z.string(),
+        accountID: z.string().optional(),
+      })
+      .optional(),
     /**
      * @deprecated
      */

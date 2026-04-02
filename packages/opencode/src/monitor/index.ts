@@ -68,6 +68,12 @@ export namespace Monitor {
     providerID: ProviderID.zod,
     modelID: ModelID.zod,
     variant: z.string().optional(),
+    auth: z
+      .object({
+        profile: z.string(),
+        accountID: z.string().optional(),
+      })
+      .optional(),
     cost: z.number(),
     tokens: z.object({
       total: z.number().optional(),
@@ -99,9 +105,20 @@ export namespace Monitor {
     return [Auth.revision(), scope.provider, scope.profile ?? "", scope.model, scope.variant ?? ""].join("\x1f")
   }
 
-  function historyNotes(scope: Scope) {
-    if (!scope.profile) return
-    return [`History is not persisted by profile, so this estimate may include other ${scope.provider} profiles.`]
+  function historyMessage(scope: Scope, accountID?: string, empty?: boolean) {
+    if (scope.profile && accountID) {
+      return empty
+        ? "No local history estimate for this profile and account yet."
+        : "Estimated from local assistant history for this profile and account."
+    }
+    if (scope.profile) {
+      return empty
+        ? "No local history estimate for this profile yet."
+        : "Estimated from local assistant history for this profile."
+    }
+    return empty
+      ? "No local history estimate yet."
+      : "Estimated from local assistant history without profile attribution."
   }
 
   function usd(value: number) {
@@ -116,6 +133,13 @@ export namespace Monitor {
 
   function total(tokens: z.infer<typeof History>["tokens"]) {
     return tokens.total ?? tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+  }
+
+  function matches(item: z.infer<typeof History>, scope: Scope, accountID?: string) {
+    if (!scope.profile) return !item.auth?.profile
+    if (item.auth?.profile !== scope.profile) return false
+    if (accountID) return item.auth?.accountID === accountID
+    return true
   }
 
   function current(data: z.infer<typeof OpenRouter>["data"]) {
@@ -141,9 +165,17 @@ export namespace Monitor {
 
   async function fallback(scope: Scope, now: number, note?: string): Promise<Snapshot> {
     const start = now - DAY
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
     const variant = scope.variant
       ? sql`json_extract(${MessageTable.data}, '$.variant') = ${scope.variant}`
       : sql`json_extract(${MessageTable.data}, '$.variant') is null`
+    const profile = scope.profile
+      ? sql`json_extract(${MessageTable.data}, '$.auth.profile') = ${scope.profile}`
+      : sql`json_extract(${MessageTable.data}, '$.auth.profile') is null`
+    const account =
+      scope.profile && ctx.accountID
+        ? sql`json_extract(${MessageTable.data}, '$.auth.accountID') = ${ctx.accountID}`
+        : undefined
     const rows = Database.use((db) =>
       db
         .select({ data: MessageTable.data })
@@ -155,6 +187,8 @@ export namespace Monitor {
             sql`json_extract(${MessageTable.data}, '$.providerID') = ${scope.provider}`,
             sql`json_extract(${MessageTable.data}, '$.modelID') = ${scope.model}`,
             variant,
+            profile,
+            account,
           ),
         )
         .orderBy(desc(MessageTable.time_created))
@@ -164,6 +198,7 @@ export namespace Monitor {
     const list = rows.flatMap((row) => {
       const parsed = History.safeParse(row.data)
       if (!parsed.success) return []
+      if (!matches(parsed.data, scope, ctx.accountID)) return []
       return [parsed.data]
     })
 
@@ -179,8 +214,8 @@ export namespace Monitor {
           start,
           end: now,
         },
-        message: "No local history estimate yet.",
-        notes: merge(note ? [note] : undefined, historyNotes(scope)),
+        message: historyMessage(scope, ctx.accountID, true),
+        notes: merge(note ? [note] : undefined),
       }
     }
 
@@ -210,26 +245,27 @@ export namespace Monitor {
         tokens: { used: usage.tokens },
         cost: { used: Number(usage.cost.toFixed(4)), currency: "USD" },
       },
-      message: "Estimated from local assistant history.",
-      notes: merge(note ? [note] : undefined, historyNotes(scope)),
+      message: historyMessage(scope, ctx.accountID),
+      notes: merge(note ? [note] : undefined),
     }
   }
 
   async function live(scope: Scope, now: number) {
     if (scope.provider !== ProviderID.openrouter) return {}
+    if (!scope.profile) {
+      return { note: "Live OpenRouter monitor requires an explicit profile, showing a local fallback." }
+    }
 
-    const auth = scope.profile
-      ? (await Auth.entry(scope.provider))?.profiles[scope.profile]
-      : await Auth.get(scope.provider)
-    if (auth?.type !== "api") {
-      return { note: "Live OpenRouter monitor requires an API key on the active profile." }
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
+    if (ctx.auth?.type !== "api") {
+      return { note: "Live OpenRouter monitor requires an API key on this profile." }
     }
 
     let res: Response
     try {
       res = await fetch("https://openrouter.ai/api/v1/key", {
         headers: {
-          Authorization: `Bearer ${auth.key}`,
+          Authorization: `Bearer ${ctx.auth.key}`,
         },
       })
     } catch {

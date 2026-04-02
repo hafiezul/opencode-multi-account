@@ -28,7 +28,16 @@ function query(input: Record<string, string | boolean | undefined>) {
   return out.toString()
 }
 
-async function seed(dir: string, model = "openai/gpt-4o") {
+async function seed(
+  dir: string,
+  input: {
+    model?: string
+    profile?: string
+    accountID?: string
+    cost?: number
+    tokens?: number
+  } = {},
+) {
   const now = Date.now()
   const sessionID = SessionID.make(`session-${crypto.randomUUID()}`)
   const messageID = MessageID.make(`message-${crypto.randomUUID()}`)
@@ -59,10 +68,18 @@ async function seed(dir: string, model = "openai/gpt-4o") {
         data: {
           role: "assistant",
           providerID: "openrouter",
-          modelID: model,
-          cost: 1.25,
+          modelID: input.model ?? "openai/gpt-4o",
+          ...(input.profile
+            ? {
+                auth: {
+                  profile: input.profile,
+                  accountID: input.accountID,
+                },
+              }
+            : {}),
+          cost: input.cost ?? 1.25,
           tokens: {
-            total: 42,
+            total: input.tokens ?? 42,
             input: 20,
             output: 22,
             reasoning: 0,
@@ -172,7 +189,7 @@ describe("provider monitor endpoint", () => {
       fn: async () => {
         await Auth.put("openrouter", "work", { type: "api", key: "work-key" })
         await Auth.activate("openrouter", "work")
-        await seed(tmp.path, "openai/gpt-4.1")
+        await seed(tmp.path, { model: "openai/gpt-4.1", profile: "work" })
 
         const originalFetch = globalThis.fetch
         globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
@@ -186,6 +203,7 @@ describe("provider monitor endpoint", () => {
           ).json()) as {
             state: string
             source: string
+            message?: string
             usage?: { requests?: { used?: number }; tokens?: { used?: number }; cost?: { used?: number } }
             notes?: string[]
           }
@@ -195,10 +213,165 @@ describe("provider monitor endpoint", () => {
           expect(body.usage?.requests?.used).toBe(1)
           expect(body.usage?.tokens?.used).toBe(42)
           expect(body.usage?.cost?.used).toBe(1.25)
+          expect(body.message).toBe("Estimated from local assistant history for this profile.")
           expect(body.notes).toContain("Live OpenRouter monitor was unavailable (503), showing a local fallback.")
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("fallback estimated history is separated by profile", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openrouter", "work", { type: "api", key: "work-key" })
+        await Auth.put("openrouter", "personal", { type: "api", key: "personal-key" })
+        await Auth.activate("openrouter", "work")
+        await seed(tmp.path, { model: "openai/gpt-4.1-profile-split", profile: "work", cost: 1.25, tokens: 42 })
+        await seed(tmp.path, { model: "openai/gpt-4.1-profile-split", profile: "personal", cost: 2.5, tokens: 84 })
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const scoped = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.1-profile-split", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            source: string
+            message?: string
+            usage?: { requests?: { used?: number }; tokens?: { used?: number }; cost?: { used?: number } }
+          }
+          const unscoped = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openrouter", model: "openai/gpt-4.1-profile-split", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            source: string
+            message?: string
+            usage?: { requests?: { used?: number } }
+          }
+
+          expect(scoped.state).toBe("estimated")
+          expect(scoped.source).toBe("history")
+          expect(scoped.message).toBe("Estimated from local assistant history for this profile.")
+          expect(scoped.usage?.requests?.used).toBe(1)
+          expect(scoped.usage?.tokens?.used).toBe(42)
+          expect(scoped.usage?.cost?.used).toBe(1.25)
+
+          expect(unscoped.state).toBe("unknown")
+          expect(unscoped.source).toBe("none")
+          expect(unscoped.message).toBe("No local history estimate yet.")
+          expect(unscoped.usage?.requests?.used).toBeUndefined()
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("unscoped fallback still uses legacy unattributed history", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openrouter", "work", { type: "api", key: "work-key" })
+        await Auth.activate("openrouter", "work")
+        await seed(tmp.path, { model: "openai/gpt-4.1-legacy" })
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openrouter", model: "openai/gpt-4.1-legacy", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            source: string
+            message?: string
+            usage?: { requests?: { used?: number }; tokens?: { used?: number }; cost?: { used?: number } }
+            notes?: string[]
+          }
+
+          expect(body.state).toBe("estimated")
+          expect(body.source).toBe("history")
+          expect(body.message).toBe("Estimated from local assistant history without profile attribution.")
+          expect(body.usage?.requests?.used).toBe(1)
+          expect(body.usage?.tokens?.used).toBe(42)
+          expect(body.usage?.cost?.used).toBe(1.25)
           expect(body.notes).toContain(
-            "History is not persisted by profile, so this estimate may include other openrouter profiles.",
+            "Live OpenRouter monitor requires an explicit profile, showing a local fallback.",
           )
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("fallback estimated history is separated by account id", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openrouter", "work", {
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: Date.now() + 60_000,
+          accountId: "acct-2",
+        })
+        await Auth.activate("openrouter", "work")
+        await seed(tmp.path, {
+          model: "openai/gpt-4.1-account-split",
+          profile: "work",
+          accountID: "acct-1",
+          cost: 1.25,
+          tokens: 42,
+        })
+        await seed(tmp.path, {
+          model: "openai/gpt-4.1-account-split",
+          profile: "work",
+          accountID: "acct-2",
+          cost: 2.5,
+          tokens: 84,
+        })
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.1-account-split", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            source: string
+            message?: string
+            usage?: { requests?: { used?: number }; tokens?: { used?: number }; cost?: { used?: number } }
+          }
+
+          expect(body.state).toBe("estimated")
+          expect(body.source).toBe("history")
+          expect(body.message).toBe("Estimated from local assistant history for this profile and account.")
+          expect(body.usage?.requests?.used).toBe(1)
+          expect(body.usage?.tokens?.used).toBe(84)
+          expect(body.usage?.cost?.used).toBe(2.5)
         } finally {
           globalThis.fetch = originalFetch
         }
@@ -214,7 +387,7 @@ describe("provider monitor endpoint", () => {
       fn: async () => {
         await Auth.put("openrouter", "work", { type: "api", key: "work-key" })
         await Auth.activate("openrouter", "work")
-        await seed(tmp.path, "openai/gpt-4.2")
+        await seed(tmp.path, { model: "openai/gpt-4.2", profile: "work" })
 
         const originalFetch = globalThis.fetch
         globalThis.fetch = mock(
@@ -255,7 +428,7 @@ describe("provider monitor endpoint", () => {
       fn: async () => {
         await Auth.put("openrouter", "work", { type: "api", key: "work-key" })
         await Auth.activate("openrouter", "work")
-        await seed(tmp.path, "openai/gpt-4.3")
+        await seed(tmp.path, { model: "openai/gpt-4.3", profile: "work" })
 
         const originalFetch = globalThis.fetch
         globalThis.fetch = mock(

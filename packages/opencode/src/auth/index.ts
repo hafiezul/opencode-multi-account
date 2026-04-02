@@ -280,6 +280,18 @@ export namespace Auth {
     return runPromise((service) => service.removeProfile(key, name))
   }
 
+  export async function resolve(providerID: string, name?: string) {
+    const item = await entry(providerID)
+    const profile = name ?? item?.active
+    const auth = profile ? item?.profiles[profile] : undefined
+    const accountID = auth && "accountId" in auth && typeof auth.accountId === "string" ? auth.accountId : undefined
+    return {
+      profile,
+      auth,
+      accountID,
+    }
+  }
+
   export function revision() {
     return rev
   }

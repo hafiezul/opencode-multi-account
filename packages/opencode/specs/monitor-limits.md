@@ -27,9 +27,9 @@ The current TUI prompt/footer already exposes the active tuple inline as `<agent
 
 `/status` already exists as a summary dialog and is the cheapest detailed surface to extend. That makes it the right place for the first detailed limits view.
 
-Historical usage is currently persisted by provider, model, cost, and tokens. It is not persisted by provider profile or account, so accurate per-profile history is not possible today.
+Historical usage is persisted by provider, model, cost, tokens, and assistant auth attribution in message JSON. Assistant history now stores `auth.profile` and optional `auth.accountID`, with no DB migration required.
 
-That gap matters most for multi-account providers. If two profiles share one provider and model, any historical estimate will be blended.
+That closes the main phase 3 attribution gap for newly written assistant messages. Legacy unattributed rows still exist and are only used for intentionally unscoped fallback.
 
 Some providers can expose live quota or rate-limit signals, but others cannot. The UX therefore needs explicit state labels: `live`, `estimated`, and `unknown`.
 
@@ -137,7 +137,7 @@ Known limits and continuation notes:
 - phase 1 originally accepted `refresh` on `/provider/monitor` but did not pass it into `Monitor.get`, so backend manual refresh did not fully bypass backend state until phase 2 fixed it
 - normalized snapshot contract remains stable for provider adapters
 - phase 2 should keep `/status` copy and notes clear when provider data is partial or unavailable
-- phase 3 should add profile or account attribution to persisted history before treating estimates as trustworthy for multi-account setups
+- phase 3 later added profile and optional account attribution in message JSON, which made scoped fallback estimates trustworthy for newly attributed history
 
 ### Phase 2
 
@@ -161,20 +161,38 @@ What shipped:
 Known limits and continuation notes:
 
 - only OpenRouter has a live adapter so far
-- history is still not attributed by profile or account, so estimates remain blended for shared provider and model pairs
+- history attribution now exists for newly written assistant messages, but live OpenRouter data is still broader than tuple-specific model or variant usage
 - OpenRouter live data is still broader than tuple-specific model or variant usage
 
 ### Phase 3
 
-Persist usage with provider profile or account context if we want correct multi-account historical estimates. Without this, any history-backed estimate stays approximate for shared provider/model pairs.
+Ship persisted auth attribution for assistant history so multi-account fallback estimates stop blending newly written usage.
 
-Once that attribution exists, add better estimated windows such as daily spend or token burn by active profile. This is the first phase where multi-account history can be considered trustworthy.
+Status: shipped and verified.
+
+What shipped:
+
+- assistant messages now persist auth attribution in history as `auth.profile` and optional `auth.accountID`
+- attribution is stamped when assistant messages are created for normal prompts, subtasks, compaction, and shell or command assistant messages
+- monitor fallback history now filters by persisted profile, and by account when current auth exposes one
+- unscoped requests intentionally use only legacy unattributed history and do not silently use active-profile live OpenRouter data
+- no DB migration was required because persistence stayed in message JSON
+- normalized snapshot contract stayed stable
+- verified live OpenRouter cache and refresh behavior still passes
+- verified profile separation test, account-id separation test, and legacy unattributed unscoped fallback test
+
+Known limits and continuation notes:
+
+- scoped fallback only benefits rows that include persisted auth attribution, so older history may remain invisible to scoped estimates
+- unscoped fallback still exists for legacy unattributed rows by design
+- this phase improves estimate trust for local history, not live provider precision
+- richer estimated windows such as daily spend or burn rate can build on the stable snapshot contract in a later phase
 
 ### Phase 4
 
 Evaluate whether `/status` is still enough. Only then consider a dedicated `/monitor` view, richer timelines, or alerting.
 
-This phase should be demand-driven. We should not prebuild it now.
+This phase should be demand-driven. We should not prebuild it now after phases 1 to 3.
 
 ---
 
@@ -203,7 +221,7 @@ Likely touchpoints for a later implementation:
 - `src/server/routes/provider.ts` or a new adjacent route for monitor/status API exposure
 - `src/provider/auth.ts` and related profile helpers for active profile/account resolution
 - a new service such as `src/monitor/index.ts` or `src/provider/monitor.ts` for normalization and refresh logic
-- session usage persistence code, likely around `src/session/index.ts` and related schemas, if phase 3 adds profile/account attribution
+- session message persistence and monitor fallback code, likely around `src/session` and `src/monitor/index.ts`, for any later attribution or history changes
 - SDK generated types after any new API route or schema is added
 
 Implementation should keep the monitor key tied to `provider/profile/model/variant`. That keeps the UI aligned with the tuple users already see.
