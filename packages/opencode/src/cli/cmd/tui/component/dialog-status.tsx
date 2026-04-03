@@ -7,6 +7,7 @@ import { useLocal } from "@tui/context/local"
 import { useKeyboard } from "@opentui/solid"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
 import { Locale } from "@/util/locale"
+import { monitorName, monitorSummary } from "../util/monitor"
 
 export type DialogStatusProps = {}
 
@@ -20,11 +21,6 @@ function ago(time?: number) {
   if (minutes < 60) return `${minutes}m ago`
   if (hours < 24) return `${hours}h ago`
   return Locale.datetime(time)
-}
-
-function money(value?: number) {
-  if (value === undefined) return "—"
-  return `$${value.toFixed(4)}`
 }
 
 export function DialogStatus() {
@@ -154,14 +150,14 @@ export function DialogStatus() {
                 <Show when={snap().window}>
                   <text fg={theme.textMuted}>window {snap().window!.label}</text>
                 </Show>
-                <Show when={snap().usage?.requests?.used !== undefined}>
-                  <text fg={theme.text}>requests {snap().usage?.requests?.used?.toLocaleString()}</text>
+                <Show when={monitorSummary(monitorName(snap(), "requests"), snap().usage?.requests)}>
+                  {(item) => <text fg={theme.text}>{item()}</text>}
                 </Show>
-                <Show when={snap().usage?.tokens?.used !== undefined}>
-                  <text fg={theme.text}>tokens {snap().usage?.tokens?.used?.toLocaleString()}</text>
+                <Show when={monitorSummary("tokens", snap().usage?.tokens)}>
+                  {(item) => <text fg={theme.text}>{item()}</text>}
                 </Show>
-                <Show when={snap().usage?.cost?.used !== undefined}>
-                  <text fg={theme.text}>cost {money(snap().usage?.cost?.used)}</text>
+                <Show when={monitorSummary("cost", snap().usage?.cost)}>
+                  {(item) => <text fg={theme.text}>{item()}</text>}
                 </Show>
                 <Show when={snap().message}>
                   <text fg={theme.textMuted} wrapMode="word">

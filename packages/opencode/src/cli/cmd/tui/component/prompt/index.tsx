@@ -36,6 +36,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { monitorHint } from "../../util/monitor"
 
 export type PromptProps = {
   sessionID?: string
@@ -846,12 +847,7 @@ export function Prompt(props: PromptProps) {
     if (!scope) return
     return sync.monitor.get(scope)
   })
-  const monitorLabel = createMemo(() => {
-    const snap = monitor()
-    if (!snap) return
-    if (snap.state === "estimated") return "est"
-    return snap.state
-  })
+  const monitorLabel = createMemo(() => monitorHint(monitor()))
   const monitorColor = createMemo(() => {
     const snap = monitor()
     if (!snap) return theme.textMuted

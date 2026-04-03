@@ -2,6 +2,9 @@ import { MessageTable } from "@/session/session.sql"
 import { Database, and, desc, gte, sql } from "@/storage/db"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Auth } from "@/auth"
+import { Config } from "@/config/config"
+import os from "node:os"
+import path from "node:path"
 import z from "zod"
 
 export namespace Monitor {
@@ -101,6 +104,120 @@ export namespace Monitor {
     }),
   })
 
+  const OpenAIWindow = z.object({
+    used_percent: z.number(),
+    limit_window_seconds: z.number().nullable().optional(),
+    reset_after_seconds: z.number().nullable().optional(),
+    reset_at: z.number().nullable().optional(),
+  })
+
+  const OpenAICredits = z.object({
+    balance: z.string().nullable().optional(),
+  })
+
+  const OpenAIOauth = z.object({
+    plan_type: z.string().nullable().optional(),
+    rate_limit: z.record(z.string(), OpenAIWindow),
+    credits: OpenAICredits.nullable().optional(),
+  })
+
+  const OpenAICost = z.object({
+    data: z.array(
+      z.object({
+        start_time: z.number(),
+        end_time: z.number(),
+        results: z.array(
+          z.object({
+            amount: z.object({
+              value: z.number(),
+              currency: z.string(),
+            }),
+          }),
+        ),
+      }),
+    ),
+  })
+
+  const AnthropicOauthWindow = z.object({
+    utilization: z.number(),
+    resets_at: z.string().nullable().optional(),
+  })
+
+  const AnthropicOauth = z.object({
+    five_hour: AnthropicOauthWindow.nullable().optional(),
+    seven_day: AnthropicOauthWindow.nullable().optional(),
+    seven_day_sonnet: AnthropicOauthWindow.nullable().optional(),
+    seven_day_opus: AnthropicOauthWindow.nullable().optional(),
+    extra_usage: z
+      .object({
+        is_enabled: z.boolean().nullable().optional(),
+        monthly_limit: z.number().nullable().optional(),
+        used_credits: z.number().nullable().optional(),
+        utilization: z.number().nullable().optional(),
+      })
+      .nullable()
+      .optional(),
+  })
+
+  const AnthropicCost = z.object({
+    data: z.array(
+      z.object({
+        starting_at: z.string(),
+        ending_at: z.string(),
+        results: z.array(
+          z.object({
+            amount: z.string(),
+            currency: z.string(),
+          }),
+        ),
+      }),
+    ),
+  })
+
+  const GoogleCreds = z.object({
+    expiry_date: z.union([z.number(), z.string()]).optional(),
+    access_token: z.string().optional(),
+    refresh_token: z.string().optional(),
+    id_token: z.string().optional(),
+    project_id: z.string().optional(),
+    quota_project_id: z.string().optional(),
+  })
+
+  const GoogleQuota = z.object({
+    buckets: z
+      .array(
+        z.object({
+          modelId: z.string().optional(),
+          remainingFraction: z.number().optional(),
+          resetTime: z.string().optional(),
+          tokenType: z.string().optional(),
+        }),
+      )
+      .optional(),
+  })
+
+  const Copilot = z.object({
+    copilot_plan: z.string().optional(),
+    plan: z.string().optional(),
+    user_id: z.union([z.string(), z.number()]).optional(),
+    id: z.number().optional(),
+    quota_reset_date_utc: z.string().optional(),
+    quota_reset_date: z.string().optional(),
+    limited_user_reset_date: z.string().optional(),
+    limited_user_quotas: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
+    monthly_quotas: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
+    quota_snapshots: z
+      .record(
+        z.string(),
+        z.object({
+          unlimited: z.boolean().optional(),
+          entitlement: z.union([z.number(), z.string()]).optional(),
+          remaining: z.union([z.number(), z.string()]).optional(),
+        }),
+      )
+      .optional(),
+  })
+
   function key(scope: Scope) {
     return [Auth.revision(), scope.provider, scope.profile ?? "", scope.model, scope.variant ?? ""].join("\x1f")
   }
@@ -123,6 +240,214 @@ export namespace Monitor {
 
   function usd(value: number) {
     return `$${value.toFixed(4)}`
+  }
+
+  function day(now: number) {
+    const date = new Date(now)
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  }
+
+  function iso(value: number) {
+    return new Date(value).toISOString()
+  }
+
+  function pct(value: number) {
+    return Math.round(value)
+  }
+
+  function parseReset(value?: string | null) {
+    if (!value) return
+    const next = Date.parse(value)
+    if (Number.isNaN(next)) return
+    return next
+  }
+
+  function cents(value?: number | null) {
+    if (value === null || value === undefined) return
+    return Number((value / 100).toFixed(4))
+  }
+
+  function account(input?: string) {
+    if (!input) return
+    const parts = input.split(".")
+    if (parts.length !== 3) return
+    try {
+      const value = JSON.parse(Buffer.from(parts[1], "base64url").toString())
+      if (typeof value?.chatgpt_account_id === "string") return value.chatgpt_account_id
+      if (typeof value?.["https://api.openai.com/auth"]?.chatgpt_account_id === "string") {
+        return value["https://api.openai.com/auth"].chatgpt_account_id
+      }
+      if (typeof value?.organizations?.[0]?.id === "string") return value.organizations[0].id
+    } catch {}
+  }
+
+  function label(seconds?: number | null) {
+    if (!seconds || seconds <= 0) return "Codex quota"
+    if (seconds % (24 * 60 * 60) === 0) return `${seconds / (24 * 60 * 60)}d quota`
+    if (seconds % (60 * 60) === 0) return `${seconds / (60 * 60)}h quota`
+    if (seconds % 60 === 0) return `${seconds / 60}m quota`
+    return `${seconds}s quota`
+  }
+
+  function reset(now: number, data: z.infer<typeof OpenAIWindow>) {
+    if (data.reset_after_seconds && data.reset_after_seconds > 0) return now + data.reset_after_seconds * 1000
+    if (!data.reset_at) return
+    return data.reset_at > 2_000_000_000_000 ? data.reset_at : data.reset_at * 1000
+  }
+
+  function home() {
+    return process.env.HOME || os.homedir()
+  }
+
+  async function file<T>(file: string, schema: z.ZodType<T>) {
+    const item = Bun.file(file)
+    if (!(await item.exists())) return
+    const parsed = schema.safeParse(await item.json().catch(() => undefined))
+    if (!parsed.success) return
+    return parsed.data
+  }
+
+  function scalar(value: unknown) {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string") {
+      const next = Number(value)
+      if (Number.isFinite(next)) return next
+    }
+  }
+
+  function record(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+  }
+
+  function string(value: unknown) {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined
+  }
+
+  function token(value: string) {
+    const parts = value.split(".")
+    if (parts.length !== 3) return
+    try {
+      const parsed = JSON.parse(Buffer.from(parts[1], "base64url").toString())
+      if (!record(parsed)) return
+      return parsed
+    } catch {}
+  }
+
+  function project(value?: string) {
+    if (!value) return {}
+    const [refresh = "", pid = "", mid = ""] = value.split("|", 3)
+    return {
+      refresh: refresh.trim(),
+      project: pid.trim() || undefined,
+      managed: mid.trim() || undefined,
+    }
+  }
+
+  async function googleProject(packed?: string, creds?: z.infer<typeof GoogleCreds>) {
+    const parts = project(packed)
+    if (parts.project) return parts.project
+    if (parts.managed) return parts.managed
+    if (creds?.project_id?.trim()) return creds.project_id.trim()
+    if (creds?.quota_project_id?.trim()) return creds.quota_project_id.trim()
+    if (process.env.OPENCODE_GEMINI_PROJECT_ID?.trim()) return process.env.OPENCODE_GEMINI_PROJECT_ID.trim()
+    if (process.env.GOOGLE_CLOUD_PROJECT?.trim()) return process.env.GOOGLE_CLOUD_PROJECT.trim()
+    if (process.env.GOOGLE_CLOUD_PROJECT_ID?.trim()) return process.env.GOOGLE_CLOUD_PROJECT_ID.trim()
+    if (process.env.GEMINI_PROJECT_ID?.trim()) return process.env.GEMINI_PROJECT_ID.trim()
+    const cfg = await Config.get().catch(() => undefined)
+    const next = cfg?.provider?.google?.options?.projectId
+    if (typeof next === "string" && next.trim()) return next.trim()
+  }
+
+  async function googleCreds() {
+    return file(path.join(home(), ".gemini", "oauth_creds.json"), GoogleCreds)
+  }
+
+  function googleClient(creds?: z.infer<typeof GoogleCreds>, packed?: string) {
+    const aud = string(token(creds?.id_token ?? "")?.aud)
+    if (aud === "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com") {
+      return {
+        id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+        secret: "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",
+      }
+    }
+    if (packed?.includes("|")) {
+      return {
+        id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+        secret: "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",
+      }
+    }
+    return {
+      id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+      secret: "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",
+    }
+  }
+
+  function copilotPaths() {
+    const list = [] as string[]
+    const xdg = process.env.XDG_CONFIG_HOME?.trim()
+    if (xdg) {
+      list.push(path.join(xdg, "github-copilot", "hosts.json"))
+      list.push(path.join(xdg, "github-copilot", "apps.json"))
+    }
+    list.push(path.join(home(), ".config", "github-copilot", "hosts.json"))
+    list.push(path.join(home(), ".config", "github-copilot", "apps.json"))
+    list.push(path.join(home(), "Library", "Application Support", "github-copilot", "hosts.json"))
+    list.push(path.join(home(), "Library", "Application Support", "github-copilot", "apps.json"))
+    return [...new Set(list)]
+  }
+
+  function copilotPick(input: Record<string, unknown>) {
+    const keys = Object.fromEntries(Object.entries(input).map(([key, value]) => [key.toLowerCase(), value]))
+    const access = string(keys.oauthtoken) ?? string(keys.accesstoken) ?? string(keys.token)
+    if (!access) return
+    const account = string(keys.accountid) ?? string(keys.userid) ?? string(keys.id)
+    const login = string(keys.login) ?? string(keys.user) ?? string(keys.username) ?? string(keys.email)
+    return { access, account, login }
+  }
+
+  async function copilotLocal() {
+    const list = [] as Array<{ access: string; account?: string; login?: string; source: string }>
+    for (const item of copilotPaths()) {
+      const data = await file(item, z.record(z.string(), z.unknown()))
+      if (!data) continue
+      const first = copilotPick(data)
+      if (first) list.push({ ...first, source: item })
+      for (const value of Object.values(data)) {
+        if (!record(value)) continue
+        const next = copilotPick(value)
+        if (next) list.push({ ...next, source: item })
+      }
+    }
+    return list
+  }
+
+  type LiveResult = {
+    snap?: Snapshot
+    note?: string
+  }
+
+  function window(data: Record<string, z.infer<typeof OpenAIWindow>>) {
+    const named = Object.entries(data)
+    if (named.length === 0) return
+    const timed = named
+      .filter(([, item]) => item.limit_window_seconds && item.limit_window_seconds > 0)
+      .sort((a, b) => (a[1].limit_window_seconds ?? Infinity) - (b[1].limit_window_seconds ?? Infinity))
+    if (timed.length > 0) {
+      return {
+        key: timed[0][0],
+        data: timed[0][1],
+        alt: timed.length > 1 ? timed[timed.length - 1] : undefined,
+      }
+    }
+    if (data.primary_window) {
+      return {
+        key: "primary_window",
+        data: data.primary_window,
+        alt: data.secondary_window ? (["secondary_window", data.secondary_window] as const) : undefined,
+      }
+    }
+    const sorted = named.toSorted((a, b) => a[0].localeCompare(b[0]))
+    return { key: sorted[0][0], data: sorted[0][1], alt: sorted.length > 1 ? sorted[sorted.length - 1] : undefined }
   }
 
   function merge(...list: Array<string[] | undefined>) {
@@ -250,7 +575,7 @@ export namespace Monitor {
     }
   }
 
-  async function live(scope: Scope, now: number) {
+  async function openrouter(scope: Scope, now: number): Promise<LiveResult> {
     if (scope.provider !== ProviderID.openrouter) return {}
     if (!scope.profile) {
       return { note: "Live OpenRouter monitor requires an explicit profile, showing a local fallback." }
@@ -331,6 +656,599 @@ export namespace Monitor {
         notes: note.length > 0 ? note : undefined,
       },
     }
+  }
+
+  async function openai(scope: Scope, now: number): Promise<LiveResult> {
+    if (scope.provider !== ProviderID.openai) return {}
+    if (!scope.profile) {
+      return { note: "Live OpenAI monitor requires an explicit profile, showing a local fallback." }
+    }
+
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
+    if (!ctx.auth) {
+      return { note: "Live OpenAI monitor requires configured auth on this profile." }
+    }
+
+    if (ctx.auth.type === "api") {
+      let res: Response
+      try {
+        res = await fetch(
+          `https://api.openai.com/v1/organization/costs?start_time=${Math.floor(day(now) / 1000)}&limit=1`,
+          {
+            headers: {
+              Authorization: `Bearer ${ctx.auth.key}`,
+              "Content-Type": "application/json",
+            },
+          },
+        )
+      } catch {
+        return { note: "Live OpenAI monitor was unavailable, showing a local fallback." }
+      }
+
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          return { note: "Live OpenAI organization costs require an admin-capable API key, showing a local fallback." }
+        }
+        return { note: `Live OpenAI monitor was unavailable (${res.status}), showing a local fallback.` }
+      }
+
+      const parsed = OpenAICost.safeParse(await res.json().catch(() => undefined))
+      if (!parsed.success || parsed.data.data.length === 0) {
+        return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
+      }
+
+      const item = parsed.data.data[0]
+      const used = Number(item.results.reduce((sum, row) => sum + row.amount.value, 0).toFixed(4))
+
+      return {
+        snap: {
+          scope,
+          state: "live",
+          fetched_at: now,
+          expires_at: now + TTL,
+          source: "provider",
+          window: {
+            label: "Today org cost",
+            start: item.start_time * 1000,
+            end: item.end_time * 1000,
+          },
+          usage: {
+            cost: {
+              used,
+              currency: item.results[0]?.amount.currency?.toUpperCase() ?? "USD",
+            },
+          },
+          message: "Live OpenAI organization cost data. No budget limit was returned.",
+          notes: [
+            "OpenAI organization cost data is org-wide and may include other models, projects, or API keys on this profile.",
+          ],
+        },
+      }
+    }
+
+    if (ctx.auth.type !== "oauth") {
+      return { note: "Live OpenAI monitor requires OAuth or API auth on this profile." }
+    }
+
+    const auth = ctx.auth as Auth.Oauth
+    let aid = ctx.accountID
+    let token = auth.access
+    if (!token || auth.expires <= now) {
+      const body = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: auth.refresh,
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+      })
+      let refresh: Response
+      try {
+        refresh = await fetch("https://auth.openai.com/oauth/token", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body,
+        })
+      } catch {
+        return { note: "Live OpenAI monitor could not refresh the OAuth token, showing a local fallback." }
+      }
+      if (!refresh.ok) {
+        return { note: "Live OpenAI monitor could not refresh the OAuth token, showing a local fallback." }
+      }
+      const next = z
+        .object({
+          access_token: z.string(),
+          refresh_token: z.string(),
+          expires_in: z.number().optional(),
+          id_token: z.string().optional(),
+        })
+        .safeParse(await refresh.json().catch(() => undefined))
+      if (!next.success) {
+        return { note: "Live OpenAI monitor returned an unexpected OAuth response, showing a local fallback." }
+      }
+      token = next.data.access_token
+      aid = account(next.data.id_token) ?? account(next.data.access_token) ?? ctx.accountID
+      await Auth.put(scope.provider, scope.profile, {
+        type: "oauth",
+        access: next.data.access_token,
+        refresh: next.data.refresh_token,
+        expires: Date.now() + (next.data.expires_in ?? 3600) * 1000,
+        accountId: aid,
+      })
+    }
+
+    let res: Response
+    try {
+      res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(aid ? { "ChatGPT-Account-Id": aid } : {}),
+        },
+      })
+    } catch {
+      return { note: "Live OpenAI monitor was unavailable, showing a local fallback." }
+    }
+
+    if (!res.ok) {
+      return { note: `Live OpenAI monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+
+    const parsed = OpenAIOauth.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success) {
+      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const picked = window(parsed.data.rate_limit)
+    if (!picked) {
+      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const used = pct(picked.data.used_percent)
+    const notes = [
+      "OpenAI live quota data is account-wide and may include other models or variants on this profile.",
+      parsed.data.plan_type ? `Plan: ${parsed.data.plan_type}.` : undefined,
+      picked.alt
+        ? `${label(picked.alt[1].limit_window_seconds)}: ${pct(picked.alt[1].used_percent)}% used.`
+        : undefined,
+      parsed.data.credits?.balance ? `Credits balance: ${parsed.data.credits.balance}.` : undefined,
+    ].filter((item): item is string => !!item)
+
+    return {
+      snap: {
+        scope,
+        state: "live",
+        fetched_at: now,
+        expires_at: now + TTL,
+        source: "provider",
+        window: {
+          label: label(picked.data.limit_window_seconds),
+        },
+        usage: {
+          requests: {
+            used,
+            limit: 100,
+          },
+        },
+        reset_at: reset(now, picked.data),
+        message: "Live OpenAI quota data.",
+        notes: notes.length > 0 ? notes : undefined,
+      },
+    }
+  }
+
+  async function anthropic(scope: Scope, now: number): Promise<LiveResult> {
+    if (scope.provider !== ProviderID.anthropic) return {}
+    if (!scope.profile) {
+      return { note: "Live Anthropic monitor requires an explicit profile, showing a local fallback." }
+    }
+
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
+    if (!ctx.auth) {
+      return { note: "Live Anthropic monitor requires configured auth on this profile." }
+    }
+
+    if (ctx.auth.type === "oauth") {
+      const auth = ctx.auth as Auth.Oauth
+      let token = auth.access
+      if (!token || auth.expires <= now) {
+        let refresh: Response
+        try {
+          refresh = await fetch("https://platform.claude.com/v1/oauth/token", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              grant_type: "refresh_token",
+              client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+              refresh_token: auth.refresh,
+            }),
+          })
+        } catch {
+          return { note: "Live Anthropic monitor could not refresh the OAuth token, showing a local fallback." }
+        }
+        if (!refresh.ok) {
+          return { note: "Live Anthropic monitor could not refresh the OAuth token, showing a local fallback." }
+        }
+        const next = z
+          .object({
+            access_token: z.string(),
+            refresh_token: z.string(),
+            expires_in: z.number(),
+          })
+          .safeParse(await refresh.json().catch(() => undefined))
+        if (!next.success) {
+          return { note: "Live Anthropic monitor returned an unexpected OAuth response, showing a local fallback." }
+        }
+        token = next.data.access_token
+        await Auth.put(scope.provider, scope.profile, {
+          type: "oauth",
+          access: next.data.access_token,
+          refresh: next.data.refresh_token,
+          expires: Date.now() + next.data.expires_in * 1000 - 5 * 60 * 1000,
+        })
+      }
+
+      let res: Response
+      try {
+        res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "claude-code/2.1.80",
+            "anthropic-beta": "oauth-2025-04-20",
+          },
+        })
+      } catch {
+        return { note: "Live Anthropic monitor was unavailable, showing a local fallback." }
+      }
+      if (!res.ok) {
+        return { note: `Live Anthropic monitor was unavailable (${res.status}), showing a local fallback.` }
+      }
+      const parsed = AnthropicOauth.safeParse(await res.json().catch(() => undefined))
+      if (!parsed.success) {
+        return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
+      }
+
+      const item =
+        parsed.data.seven_day ?? parsed.data.seven_day_sonnet ?? parsed.data.seven_day_opus ?? parsed.data.five_hour
+      if (!item) {
+        return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
+      }
+
+      const notes = [
+        "Anthropic live quota data is account-wide and may include other models or variants on this profile.",
+        parsed.data.five_hour ? `5h quota: ${pct(parsed.data.five_hour.utilization)}% used.` : undefined,
+        parsed.data.seven_day ? `7d quota: ${pct(parsed.data.seven_day.utilization)}% used.` : undefined,
+        parsed.data.seven_day_sonnet
+          ? `7d Sonnet quota: ${pct(parsed.data.seven_day_sonnet.utilization)}% used.`
+          : undefined,
+        parsed.data.seven_day_opus ? `7d Opus quota: ${pct(parsed.data.seven_day_opus.utilization)}% used.` : undefined,
+        parsed.data.extra_usage?.is_enabled
+          ? `Extra usage: ${usd(cents(parsed.data.extra_usage.used_credits) ?? 0)} of ${usd(cents(parsed.data.extra_usage.monthly_limit) ?? 0)}.`
+          : undefined,
+      ].filter((note, idx, list): note is string => !!note && list.indexOf(note) === idx)
+
+      return {
+        snap: {
+          scope,
+          state: "live",
+          fetched_at: now,
+          expires_at: now + TTL,
+          source: "provider",
+          window: {
+            label: parsed.data.seven_day
+              ? "7d quota"
+              : parsed.data.seven_day_sonnet
+                ? "7d Sonnet quota"
+                : parsed.data.seven_day_opus
+                  ? "7d Opus quota"
+                  : "5h quota",
+          },
+          usage: {
+            requests: {
+              used: pct(item.utilization),
+              limit: 100,
+            },
+          },
+          reset_at: parseReset(item.resets_at),
+          message: "Live Anthropic quota data.",
+          notes: notes.length > 0 ? notes : undefined,
+        },
+      }
+    }
+
+    let res: Response
+    try {
+      const params = new URLSearchParams({
+        starting_at: iso(day(now)),
+        bucket_width: "1d",
+        limit: "1",
+      })
+      res = await fetch(`https://api.anthropic.com/v1/organizations/cost_report?${params.toString()}`, {
+        headers: {
+          "x-api-key": ctx.auth.key,
+          "anthropic-version": "2023-06-01",
+          Accept: "application/json",
+        },
+      })
+    } catch {
+      return { note: "Live Anthropic monitor was unavailable, showing a local fallback." }
+    }
+
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        return { note: "Live Anthropic cost reports require organization access, showing a local fallback." }
+      }
+      return { note: `Live Anthropic monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+
+    const parsed = AnthropicCost.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success || parsed.data.data.length === 0) {
+      return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const item = parsed.data.data[0]
+    const used = Number(item.results.reduce((sum, row) => sum + Number(row.amount), 0).toFixed(4))
+
+    return {
+      snap: {
+        scope,
+        state: "live",
+        fetched_at: now,
+        expires_at: now + TTL,
+        source: "provider",
+        window: {
+          label: "Today org cost",
+          start: parseReset(item.starting_at),
+          end: parseReset(item.ending_at),
+        },
+        usage: {
+          cost: {
+            used,
+            currency: item.results[0]?.currency?.toUpperCase() ?? "USD",
+          },
+        },
+        message: "Live Anthropic organization cost data. No budget limit was returned.",
+        notes: [
+          "Anthropic organization cost data is org-wide and may include other models, workspaces, or API keys on this profile.",
+        ],
+      },
+    }
+  }
+
+  async function google(scope: Scope, now: number): Promise<LiveResult> {
+    if (scope.provider !== ProviderID.google) return {}
+
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
+    const saved = ctx.auth?.type === "oauth" ? (ctx.auth as Auth.Oauth) : undefined
+    const creds = await googleCreds()
+    const packed = saved?.refresh || creds?.refresh_token
+    const fresh = project(packed)
+    const gid = await googleProject(saved?.refresh, creds)
+    if (!packed || !fresh.refresh || !gid) {
+      return {
+        note: "Live Gemini monitor requires OAuth credentials and a resolved Google Cloud project, showing a local fallback.",
+      }
+    }
+
+    const client = googleClient(creds, saved?.refresh)
+    let access = saved?.access || creds?.access_token
+    const expiry = scalar(saved?.expires ?? creds?.expiry_date)
+    if (!access || !expiry || expiry <= now + 60_000) {
+      let refresh: Response
+      try {
+        refresh = await fetch("https://oauth2.googleapis.com/token", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: fresh.refresh,
+            client_id: client.id,
+            client_secret: client.secret,
+          }),
+        })
+      } catch {
+        return { note: "Live Gemini monitor could not refresh the OAuth token, showing a local fallback." }
+      }
+      if (!refresh.ok) {
+        return { note: "Live Gemini monitor could not refresh the OAuth token, showing a local fallback." }
+      }
+      const next = z
+        .object({
+          access_token: z.string(),
+          expires_in: z.number(),
+        })
+        .safeParse(await refresh.json().catch(() => undefined))
+      if (!next.success) {
+        return { note: "Live Gemini monitor returned an unexpected OAuth response, showing a local fallback." }
+      }
+      access = next.data.access_token
+      if (scope.profile) {
+        await Auth.put(scope.provider, scope.profile, {
+          type: "oauth",
+          access,
+          refresh: saved?.refresh ?? fresh.refresh,
+          expires: Date.now() + next.data.expires_in * 1000,
+        })
+      }
+    }
+
+    let res: Response
+    try {
+      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access}`,
+        },
+        body: JSON.stringify({ project: gid }),
+      })
+    } catch {
+      return { note: "Live Gemini monitor was unavailable, showing a local fallback." }
+    }
+    if (!res.ok) {
+      return { note: `Live Gemini monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+    const parsed = GoogleQuota.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success || !parsed.data.buckets?.length) {
+      return { note: "Live Gemini monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const list = parsed.data.buckets.filter((item) => item.remainingFraction !== undefined)
+    const bucket =
+      list.find((item) => item.modelId === scope.model) ??
+      list.toSorted((a, b) => (a.remainingFraction ?? 1) - (b.remainingFraction ?? 1))[0]
+    if (!bucket || bucket.remainingFraction === undefined) {
+      return { note: "Live Gemini monitor returned an unexpected response, showing a local fallback." }
+    }
+    const used = pct((1 - Math.max(0, Math.min(bucket.remainingFraction, 1))) * 100)
+    const notes = [
+      "Gemini live quota data is account-wide for the resolved Google Cloud project and may include other models or variants.",
+      `Project: ${gid}.`,
+      ...parsed.data.buckets
+        .filter((item) => item.modelId && item.remainingFraction !== undefined)
+        .slice(0, 4)
+        .map(
+          (item) => `${item.modelId}: ${pct((1 - Math.max(0, Math.min(item.remainingFraction ?? 1, 1))) * 100)}% used.`,
+        ),
+    ]
+
+    return {
+      snap: {
+        scope,
+        state: "live",
+        fetched_at: now,
+        expires_at: now + TTL,
+        source: "provider",
+        window: {
+          label: bucket.tokenType ? `Gemini ${bucket.tokenType.toLowerCase()} quota` : "Gemini quota",
+        },
+        usage: {
+          requests: {
+            used,
+            limit: 100,
+          },
+        },
+        reset_at: parseReset(bucket.resetTime),
+        message: "Live Gemini quota data.",
+        notes,
+      },
+    }
+  }
+
+  async function github(scope: Scope, now: number): Promise<LiveResult> {
+    if (scope.provider !== ProviderID.githubCopilot) return {}
+
+    const ctx = await Auth.resolve(scope.provider, scope.profile)
+    const auth = ctx.auth?.type === "oauth" ? (ctx.auth as Auth.Oauth) : undefined
+    const local = auth ? [] : await copilotLocal()
+    const access = auth?.access || auth?.refresh || local[0]?.access
+    if (!access) {
+      return {
+        note: "Live GitHub Copilot monitor requires OAuth credentials or local Copilot token files, showing a local fallback.",
+      }
+    }
+
+    let res: Response
+    try {
+      res = await fetch("https://api.github.com/copilot_internal/user", {
+        headers: {
+          Authorization: `token ${access}`,
+          Accept: "application/json",
+          "Editor-Version": "vscode/1.96.2",
+          "X-Github-Api-Version": "2025-04-01",
+        },
+      })
+    } catch {
+      return { note: "Live GitHub Copilot monitor was unavailable, showing a local fallback." }
+    }
+    if (!res.ok) {
+      return { note: `Live GitHub Copilot monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+    const parsed = Copilot.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success) {
+      return { note: "Live GitHub Copilot monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const data = parsed.data
+    let limit = 0
+    let left = 0
+    if (data.quota_snapshots) {
+      for (const item of Object.values(data.quota_snapshots)) {
+        if (item.unlimited) {
+          limit = 2_147_483_647
+          left = limit
+          break
+        }
+        limit += scalar(item.entitlement) ?? 0
+        left += scalar(item.remaining) ?? 0
+      }
+    }
+    if (limit === 0) {
+      const month = Object.values(data.monthly_quotas ?? {}).reduce<number>((sum, item) => sum + (scalar(item) ?? 0), 0)
+      const used = Object.values(data.limited_user_quotas ?? {}).reduce<number>(
+        (sum, item) => sum + (scalar(item) ?? 0),
+        0,
+      )
+      limit = month
+      left = limit > 0 ? Math.max(0, limit - used) : 0
+    }
+    if (limit === 0) {
+      return { note: "Live GitHub Copilot monitor returned no quota values, showing a local fallback." }
+    }
+
+    const resetAt =
+      parseReset(data.quota_reset_date_utc) ??
+      parseReset(data.quota_reset_date) ??
+      parseReset(data.limited_user_reset_date)
+    const plan = data.copilot_plan ?? data.plan
+    const used = Math.max(0, limit - left)
+    const notes = [
+      plan ? `Plan: ${plan}.` : undefined,
+      auth ? undefined : `Using local Copilot token data from ${local[0]?.source}.`,
+    ].filter((item): item is string => !!item)
+
+    return {
+      snap: {
+        scope,
+        state: "live",
+        fetched_at: now,
+        expires_at: now + TTL,
+        source: "provider",
+        window: {
+          label: "Monthly premium requests",
+        },
+        usage: {
+          requests: {
+            used,
+            limit,
+          },
+        },
+        reset_at: resetAt,
+        message: "Live GitHub Copilot quota data.",
+        notes: notes.length > 0 ? notes : undefined,
+      },
+    }
+  }
+
+  const adapters: Array<(scope: Scope, now: number) => Promise<LiveResult>> = [
+    openrouter,
+    anthropic,
+    openai,
+    google,
+    github,
+  ]
+
+  async function live(scope: Scope, now: number): Promise<LiveResult> {
+    for (const item of adapters) {
+      const result = await item(scope, now)
+      if (result.snap || result.note) return result
+    }
+    return {}
   }
 
   async function load(scope: Scope): Promise<Snapshot> {
