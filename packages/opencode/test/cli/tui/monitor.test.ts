@@ -115,4 +115,37 @@ describe("monitor tui formatting", () => {
   test("keeps used-only summaries when no limit exists", () => {
     expect(monitorSummary("tokens", { used: 1_234 })).toBe("tokens 1,234")
   })
+
+  test("allows additive account snapshots on monitor payloads", () => {
+    expect(
+      monitorHint({
+        state: "live",
+        source: "provider",
+        scope: { provider: "openai", model: "gpt-5.3-codex" },
+        fetched_at: 1,
+        expires_at: 2,
+        usage: {
+          requests: { used: 75, limit: 100 },
+        },
+        accounts: [
+          {
+            key: "acct_1",
+            label: "acct_1",
+            state: "live",
+            usage: {
+              requests: { used: 20, limit: 100 },
+            },
+          },
+          {
+            key: "acct_2",
+            label: "acct_2",
+            state: "live",
+            usage: {
+              requests: { used: 75, limit: 100 },
+            },
+          },
+        ],
+      }),
+    ).toBe("75%")
+  })
 })

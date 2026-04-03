@@ -50,6 +50,20 @@ export namespace Monitor {
     })
     .meta({ ref: "MonitorWindow" })
 
+  const AccountSnapshot = z
+    .object({
+      key: z.string(),
+      label: z.string(),
+      state: z.enum(["live", "estimated", "unknown"]),
+      window: Window.optional(),
+      usage: Usage.optional(),
+      reset_at: z.number().optional(),
+      message: z.string().optional(),
+      notes: z.array(z.string()).optional(),
+    })
+    .meta({ ref: "MonitorAccountSnapshot" })
+  export type AccountSnapshot = z.infer<typeof AccountSnapshot>
+
   export const Snapshot = z
     .object({
       scope: Scope,
@@ -62,6 +76,7 @@ export namespace Monitor {
       reset_at: z.number().optional(),
       message: z.string().optional(),
       notes: z.array(z.string()).optional(),
+      accounts: z.array(AccountSnapshot).optional(),
     })
     .meta({ ref: "MonitorSnapshot" })
   export type Snapshot = z.infer<typeof Snapshot>
@@ -396,25 +411,65 @@ export namespace Monitor {
     return [...new Set(list)]
   }
 
-  function copilotPick(input: Record<string, unknown>) {
+  function copilotDomain(value?: string) {
+    if (!value?.trim()) return
+    const next = value.trim()
+    try {
+      const url = new URL(next.includes("://") ? next : `https://${next}`)
+      const host = url.host.replace(/^copilot-api\./, "").replace(/^api\./, "")
+      if (!host) return
+      return host === "github" ? "github.com" : host
+    } catch {
+      const host = next
+        .replace(/^https?:\/\//, "")
+        .replace(/\/.*$/, "")
+        .replace(/^copilot-api\./, "")
+        .replace(/^api\./, "")
+      if (!host) return
+      return host === "github" ? "github.com" : host
+    }
+  }
+
+  function copilotHost(value?: string) {
+    if (!value?.trim()) return
+    const next = value.trim()
+    if (next !== "github" && next !== "github.com" && !next.includes(".") && !next.includes("://")) return
+    return copilotDomain(next)
+  }
+
+  function copilotPick(input: Record<string, unknown>, base?: string) {
     const keys = Object.fromEntries(Object.entries(input).map(([key, value]) => [key.toLowerCase(), value]))
     const access = string(keys.oauthtoken) ?? string(keys.accesstoken) ?? string(keys.token)
     if (!access) return
     const account = string(keys.accountid) ?? string(keys.userid) ?? string(keys.id)
     const login = string(keys.login) ?? string(keys.user) ?? string(keys.username) ?? string(keys.email)
-    return { access, account, login }
+    const enterpriseUrl =
+      copilotDomain(
+        string(keys.enterpriseurl) ??
+          string(keys.serverurl) ??
+          string(keys.host) ??
+          string(keys.hostname) ??
+          string(keys.domain),
+      ) ?? copilotHost(base)
+    return { access, account, login, enterpriseUrl }
   }
 
   async function copilotLocal() {
-    const list = [] as Array<{ access: string; account?: string; login?: string; source: string }>
+    const list = [] as Array<{
+      access: string
+      account?: string
+      login?: string
+      source: string
+      enterpriseUrl?: string
+    }>
     for (const item of copilotPaths()) {
       const data = await file(item, z.record(z.string(), z.unknown()))
       if (!data) continue
       const first = copilotPick(data)
       if (first) list.push({ ...first, source: item })
-      for (const value of Object.values(data)) {
+      for (const [key, value] of Object.entries(data)) {
         if (!record(value)) continue
-        const next = copilotPick(value)
+        const next = copilotPick(value, key)
         if (next) list.push({ ...next, source: item })
       }
     }
@@ -431,7 +486,11 @@ export namespace Monitor {
     if (named.length === 0) return
     const timed = named
       .filter(([, item]) => item.limit_window_seconds && item.limit_window_seconds > 0)
-      .sort((a, b) => (a[1].limit_window_seconds ?? Infinity) - (b[1].limit_window_seconds ?? Infinity))
+      .sort((a, b) => {
+        const used = pct(b[1].used_percent) - pct(a[1].used_percent)
+        if (used !== 0) return used
+        return (a[1].limit_window_seconds ?? Infinity) - (b[1].limit_window_seconds ?? Infinity)
+      })
     if (timed.length > 0) {
       return {
         key: timed[0][0],
@@ -456,8 +515,281 @@ export namespace Monitor {
     return next
   }
 
+  function uniq(...list: Array<string[] | undefined>) {
+    const next = [] as string[]
+    for (const item of list.flatMap((item) => item ?? [])) {
+      if (next.includes(item)) continue
+      next.push(item)
+    }
+    if (next.length === 0) return
+    return next
+  }
+
+  function pick(usage?: Snapshot["usage"]) {
+    return usage?.requests ?? usage?.tokens ?? usage?.cost
+  }
+
+  function rate(usage?: Snapshot["usage"]) {
+    const item = pick(usage)
+    if (!item || item.used === undefined) return -1
+    if (item.limit === undefined) return item.used
+    if (item.limit === 0) return item.used === 0 ? 0 : Number.POSITIVE_INFINITY
+    return item.used / item.limit
+  }
+
+  function left(usage?: Snapshot["usage"]) {
+    const item = pick(usage)
+    if (!item || item.used === undefined || item.limit === undefined) return Number.POSITIVE_INFINITY
+    return item.limit - item.used
+  }
+
+  function worst<T extends { usage?: Snapshot["usage"]; reset_at?: number }>(list: T[]) {
+    return list.toSorted((a, b) => {
+      const ar = rate(a.usage)
+      const br = rate(b.usage)
+      if (ar !== br) return br > ar ? 1 : -1
+      const rem = left(a.usage) - left(b.usage)
+      if (rem !== 0) return rem
+      return (a.reset_at ?? Infinity) - (b.reset_at ?? Infinity)
+    })[0]
+  }
+
+  function snap(
+    scope: Scope,
+    now: number,
+    row: AccountSnapshot,
+    rows?: AccountSnapshot[],
+    notes?: string[],
+    all?: boolean,
+  ): Snapshot {
+    return {
+      scope,
+      state: row.state,
+      fetched_at: now,
+      expires_at: now + TTL,
+      source: "provider",
+      window: row.window,
+      usage: row.usage,
+      reset_at: row.reset_at,
+      message: row.message,
+      notes: uniq(row.notes, notes),
+      accounts: rows && (all || rows.length > 1) ? rows : undefined,
+    }
+  }
+
   function total(tokens: z.infer<typeof History>["tokens"]) {
     return tokens.total ?? tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+  }
+
+  function accountLabel(key?: string, current?: string) {
+    if (!key) return "Current account"
+    if (key === current) return `${key} (current)`
+    return key
+  }
+
+  function copilotURL(base?: string) {
+    const host = copilotDomain(base)
+    if (!host || host === "github.com") return "https://api.github.com/copilot_internal/user"
+    return `https://copilot-api.${host}/copilot_internal/user`
+  }
+
+  function openaiURL(base?: string) {
+    if (!base?.trim()) return "https://chatgpt.com/backend-api/wham/usage"
+    try {
+      const url = new URL(base)
+      const path = url.pathname.replace(/\/+$/, "").replace(/\/v\d+$/, "")
+      url.pathname = `${path}/api/codex/usage`.replace(/\/+/g, "/")
+      url.search = ""
+      url.hash = ""
+      return url.toString()
+    } catch {
+      return "https://chatgpt.com/backend-api/wham/usage"
+    }
+  }
+
+  function openaiAccounts(input?: string, current?: string) {
+    const parsed = token(input ?? "")
+    const auth = record(parsed?.["https://api.openai.com/auth"])
+      ? (parsed["https://api.openai.com/auth"] as Record<string, unknown>)
+      : undefined
+    return [
+      current,
+      string(parsed?.chatgpt_account_id),
+      string(auth?.chatgpt_account_id),
+      ...(Array.isArray(parsed?.organizations)
+        ? parsed.organizations
+            .flatMap((item) => (record(item) ? [string(item.id)] : []))
+            .filter((item): item is string => !!item)
+        : []),
+    ].filter((item, idx, list): item is string => !!item && list.indexOf(item) === idx)
+  }
+
+  function copilotKey(access: string, account?: string, login?: string, enterpriseUrl?: string) {
+    const host = copilotDomain(enterpriseUrl)
+    const prefix = host && host !== "github.com" ? `${host}:` : ""
+    if (account) return `${prefix}${account}`
+    const parsed = token(access)
+    const sub = string(parsed?.sub)
+    if (sub) return `${prefix}${sub}`
+    const id = string(parsed?.login) ?? string(parsed?.email) ?? login
+    const hash = Bun.hash(access).toString(36)
+    if (id) return `${prefix}${id}:${hash}`
+    return `${prefix}token-${hash}`
+  }
+
+  function copilotUsage(data: z.infer<typeof Copilot>) {
+    let limit = 0
+    let left = 0
+    if (data.quota_snapshots) {
+      for (const item of Object.values(data.quota_snapshots)) {
+        if (item.unlimited) {
+          limit = 2_147_483_647
+          left = limit
+          break
+        }
+        limit += scalar(item.entitlement) ?? 0
+        left += scalar(item.remaining) ?? 0
+      }
+    }
+    if (limit === 0) {
+      const month = Object.values(data.monthly_quotas ?? {}).reduce<number>((sum, item) => sum + (scalar(item) ?? 0), 0)
+      const used = Object.values(data.limited_user_quotas ?? {}).reduce<number>(
+        (sum, item) => sum + (scalar(item) ?? 0),
+        0,
+      )
+      limit = month
+      left = limit > 0 ? Math.max(0, limit - used) : 0
+    }
+    if (limit === 0) return
+    return {
+      limit,
+      used: Math.max(0, limit - left),
+      reset_at:
+        parseReset(data.quota_reset_date_utc) ??
+        parseReset(data.quota_reset_date) ??
+        parseReset(data.limited_user_reset_date),
+      plan: data.copilot_plan ?? data.plan,
+      account: string(data.user_id) ?? (data.id !== undefined ? String(data.id) : undefined),
+    }
+  }
+
+  async function openaiQuota(input: {
+    now: number
+    access: string
+    url: string
+    key?: string
+    current?: string
+  }): Promise<{ row?: AccountSnapshot; note?: string }> {
+    let res: Response
+    try {
+      res = await fetch(input.url, {
+        headers: {
+          Authorization: `Bearer ${input.access}`,
+          ...(input.key ? { "ChatGPT-Account-Id": input.key } : {}),
+        },
+      })
+    } catch {
+      return { note: "Live OpenAI monitor was unavailable, showing a local fallback." }
+    }
+
+    if (!res.ok) {
+      return { note: `Live OpenAI monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+
+    const parsed = OpenAIOauth.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success) {
+      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const picked = window(parsed.data.rate_limit)
+    if (!picked) {
+      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    return {
+      row: {
+        key: input.key ?? input.current ?? "default",
+        label: accountLabel(input.key, input.current),
+        state: "live",
+        window: {
+          label: label(picked.data.limit_window_seconds),
+        },
+        usage: {
+          requests: {
+            used: pct(picked.data.used_percent),
+            limit: 100,
+          },
+        },
+        reset_at: reset(input.now, picked.data),
+        message: "Live OpenAI quota data.",
+        notes: uniq(
+          ["OpenAI live quota data is account-wide and may include other models or variants on this profile."],
+          parsed.data.plan_type ? [`Plan: ${parsed.data.plan_type}.`] : undefined,
+          picked.alt
+            ? [`${label(picked.alt[1].limit_window_seconds)}: ${pct(picked.alt[1].used_percent)}% used.`]
+            : undefined,
+          parsed.data.credits?.balance ? [`Credits balance: ${parsed.data.credits.balance}.`] : undefined,
+        ),
+      },
+    }
+  }
+
+  async function copilotQuota(input: {
+    access: string
+    account?: string
+    login?: string
+    source?: string
+    enterpriseUrl?: string
+  }): Promise<{ row?: AccountSnapshot; note?: string }> {
+    let res: Response
+    try {
+      res = await fetch(copilotURL(input.enterpriseUrl), {
+        headers: {
+          Authorization: `token ${input.access}`,
+          Accept: "application/json",
+          "Editor-Version": "vscode/1.96.2",
+          "X-Github-Api-Version": "2025-04-01",
+        },
+      })
+    } catch {
+      return { note: "Live GitHub Copilot monitor was unavailable, showing a local fallback." }
+    }
+    if (!res.ok) {
+      return { note: `Live GitHub Copilot monitor was unavailable (${res.status}), showing a local fallback.` }
+    }
+    const parsed = Copilot.safeParse(await res.json().catch(() => undefined))
+    if (!parsed.success) {
+      return { note: "Live GitHub Copilot monitor returned an unexpected response, showing a local fallback." }
+    }
+
+    const usage = copilotUsage(parsed.data)
+    if (!usage) {
+      return { note: "Live GitHub Copilot monitor returned no quota values, showing a local fallback." }
+    }
+
+    const key = copilotKey(input.access, usage.account ?? input.account, input.login, input.enterpriseUrl)
+    return {
+      row: {
+        key,
+        label: input.login ?? usage.account ?? input.account ?? key,
+        state: "live",
+        window: {
+          label: "Monthly premium requests",
+        },
+        usage: {
+          requests: {
+            used: usage.used,
+            limit: usage.limit,
+          },
+        },
+        reset_at: usage.reset_at,
+        message: "Live GitHub Copilot quota data.",
+        notes: uniq(
+          usage.plan ? [`Plan: ${usage.plan}.`] : undefined,
+          input.source ? [`Using local Copilot token data from ${input.source}.`] : undefined,
+        ),
+      },
+    }
   }
 
   function matches(item: z.infer<typeof History>, scope: Scope, accountID?: string) {
@@ -730,6 +1062,8 @@ export namespace Monitor {
       return { note: "Live OpenAI monitor requires OAuth or API auth on this profile." }
     }
 
+    const cfg = await Config.get().catch(() => undefined)
+    const url = openaiURL(cfg?.provider?.openai?.options?.baseURL)
     const auth = ctx.auth as Auth.Oauth
     let aid = ctx.accountID
     let token = auth.access
@@ -776,62 +1110,48 @@ export namespace Monitor {
       })
     }
 
-    let res: Response
-    try {
-      res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...(aid ? { "ChatGPT-Account-Id": aid } : {}),
-        },
+    const rows = [] as AccountSnapshot[]
+    const notes = [] as string[]
+    const keys = openaiAccounts(token, aid)
+    const seen = new Set<string>()
+    for (const key of keys.length > 0 ? keys : [undefined]) {
+      const result = await openaiQuota({
+        now,
+        access: token,
+        url,
+        key,
+        current: aid,
       })
-    } catch {
-      return { note: "Live OpenAI monitor was unavailable, showing a local fallback." }
+      if (!result.row) {
+        if (result.note) notes.push(result.note)
+        continue
+      }
+      if (seen.has(result.row.key)) continue
+      seen.add(result.row.key)
+      rows.push(result.row)
     }
 
-    if (!res.ok) {
-      return { note: `Live OpenAI monitor was unavailable (${res.status}), showing a local fallback.` }
+    const row = worst(rows)
+    if (!row) {
+      return {
+        note:
+          uniq(notes)?.join(" ") ?? "Live OpenAI monitor returned an unexpected response, showing a local fallback.",
+      }
     }
-
-    const parsed = OpenAIOauth.safeParse(await res.json().catch(() => undefined))
-    if (!parsed.success) {
-      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
-    }
-
-    const picked = window(parsed.data.rate_limit)
-    if (!picked) {
-      return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
-    }
-
-    const used = pct(picked.data.used_percent)
-    const notes = [
-      "OpenAI live quota data is account-wide and may include other models or variants on this profile.",
-      parsed.data.plan_type ? `Plan: ${parsed.data.plan_type}.` : undefined,
-      picked.alt
-        ? `${label(picked.alt[1].limit_window_seconds)}: ${pct(picked.alt[1].used_percent)}% used.`
-        : undefined,
-      parsed.data.credits?.balance ? `Credits balance: ${parsed.data.credits.balance}.` : undefined,
-    ].filter((item): item is string => !!item)
 
     return {
-      snap: {
+      snap: snap(
         scope,
-        state: "live",
-        fetched_at: now,
-        expires_at: now + TTL,
-        source: "provider",
-        window: {
-          label: label(picked.data.limit_window_seconds),
-        },
-        usage: {
-          requests: {
-            used,
-            limit: 100,
-          },
-        },
-        reset_at: reset(now, picked.data),
-        message: "Live OpenAI quota data.",
-        notes: notes.length > 0 ? notes : undefined,
-      },
+        now,
+        row,
+        rows,
+        uniq(
+          ...rows.map((item) => item.notes),
+          notes,
+          rows.length > 1 ? [`Aggregated across ${rows.length} OpenAI accounts on this profile.`] : undefined,
+        ),
+        notes.length > 0,
+      ),
     }
   }
 
@@ -1145,93 +1465,61 @@ export namespace Monitor {
 
     const ctx = await Auth.resolve(scope.provider, scope.profile)
     const auth = ctx.auth?.type === "oauth" ? (ctx.auth as Auth.Oauth) : undefined
-    const local = auth ? [] : await copilotLocal()
-    const access = auth?.access || auth?.refresh || local[0]?.access
-    if (!access) {
+    const local = await copilotLocal()
+    const list = [
+      ...(auth
+        ? [
+            {
+              access: auth.access || auth.refresh,
+              account: ctx.accountID,
+              enterpriseUrl: auth.enterpriseUrl,
+              source: undefined,
+            },
+          ]
+        : []),
+      ...local,
+    ].filter((item) => !!item.access)
+    if (list.length === 0) {
       return {
         note: "Live GitHub Copilot monitor requires OAuth credentials or local Copilot token files, showing a local fallback.",
       }
     }
 
-    let res: Response
-    try {
-      res = await fetch("https://api.github.com/copilot_internal/user", {
-        headers: {
-          Authorization: `token ${access}`,
-          Accept: "application/json",
-          "Editor-Version": "vscode/1.96.2",
-          "X-Github-Api-Version": "2025-04-01",
-        },
-      })
-    } catch {
-      return { note: "Live GitHub Copilot monitor was unavailable, showing a local fallback." }
-    }
-    if (!res.ok) {
-      return { note: `Live GitHub Copilot monitor was unavailable (${res.status}), showing a local fallback.` }
-    }
-    const parsed = Copilot.safeParse(await res.json().catch(() => undefined))
-    if (!parsed.success) {
-      return { note: "Live GitHub Copilot monitor returned an unexpected response, showing a local fallback." }
+    const rows = [] as AccountSnapshot[]
+    const notes = [] as string[]
+    const seen = new Set<string>()
+    for (const item of list) {
+      const result = await copilotQuota(item)
+      if (!result.row) {
+        if (result.note) notes.push(result.note)
+        continue
+      }
+      if (seen.has(result.row.key)) continue
+      seen.add(result.row.key)
+      rows.push(result.row)
     }
 
-    const data = parsed.data
-    let limit = 0
-    let left = 0
-    if (data.quota_snapshots) {
-      for (const item of Object.values(data.quota_snapshots)) {
-        if (item.unlimited) {
-          limit = 2_147_483_647
-          left = limit
-          break
-        }
-        limit += scalar(item.entitlement) ?? 0
-        left += scalar(item.remaining) ?? 0
+    const row = worst(rows)
+    if (!row) {
+      return {
+        note:
+          uniq(notes)?.join(" ") ?? "Live GitHub Copilot monitor returned no quota values, showing a local fallback.",
       }
     }
-    if (limit === 0) {
-      const month = Object.values(data.monthly_quotas ?? {}).reduce<number>((sum, item) => sum + (scalar(item) ?? 0), 0)
-      const used = Object.values(data.limited_user_quotas ?? {}).reduce<number>(
-        (sum, item) => sum + (scalar(item) ?? 0),
-        0,
-      )
-      limit = month
-      left = limit > 0 ? Math.max(0, limit - used) : 0
-    }
-    if (limit === 0) {
-      return { note: "Live GitHub Copilot monitor returned no quota values, showing a local fallback." }
-    }
-
-    const resetAt =
-      parseReset(data.quota_reset_date_utc) ??
-      parseReset(data.quota_reset_date) ??
-      parseReset(data.limited_user_reset_date)
-    const plan = data.copilot_plan ?? data.plan
-    const used = Math.max(0, limit - left)
-    const notes = [
-      plan ? `Plan: ${plan}.` : undefined,
-      auth ? undefined : `Using local Copilot token data from ${local[0]?.source}.`,
-    ].filter((item): item is string => !!item)
 
     return {
-      snap: {
+      snap: snap(
         scope,
-        state: "live",
-        fetched_at: now,
-        expires_at: now + TTL,
-        source: "provider",
-        window: {
-          label: "Monthly premium requests",
-        },
-        usage: {
-          requests: {
-            used,
-            limit,
-          },
-        },
-        reset_at: resetAt,
-        message: "Live GitHub Copilot quota data.",
-        notes: notes.length > 0 ? notes : undefined,
-      },
+        now,
+        row,
+        rows,
+        uniq(
+          ...rows.map((item) => item.notes),
+          notes,
+          rows.length > 1 ? [`Aggregated across ${rows.length} GitHub Copilot accounts.`] : undefined,
+        ),
+        notes.length > 0,
+      ),
     }
   }
 

@@ -171,6 +171,57 @@ export function DialogStatus() {
                     </text>
                   )}
                 </For>
+                <Show when={(snap().accounts?.length ?? 0) > 0}>
+                  <box flexDirection="column" marginTop={1}>
+                    <text fg={theme.text}>accounts {snap().accounts!.length}</text>
+                    <For each={snap().accounts ?? []}>
+                      {(item) => (
+                        <box flexDirection="column" paddingLeft={2}>
+                          <text fg={theme.text}>
+                            {item.label}{" "}
+                            <span
+                              style={{
+                                fg:
+                                  item.state === "live"
+                                    ? theme.success
+                                    : item.state === "estimated"
+                                      ? theme.warning
+                                      : theme.textMuted,
+                                bold: true,
+                              }}
+                            >
+                              {item.state}
+                            </span>
+                          </text>
+                          <Show when={item.window}>
+                            <text fg={theme.textMuted}>window {item.window!.label}</text>
+                          </Show>
+                          <Show when={monitorSummary(monitorName(snap(), "requests"), item.usage?.requests)}>
+                            {(line) => <text fg={theme.text}>{line()}</text>}
+                          </Show>
+                          <Show when={monitorSummary("tokens", item.usage?.tokens)}>
+                            {(line) => <text fg={theme.text}>{line()}</text>}
+                          </Show>
+                          <Show when={monitorSummary("cost", item.usage?.cost)}>
+                            {(line) => <text fg={theme.text}>{line()}</text>}
+                          </Show>
+                          <Show when={item.message}>
+                            <text fg={theme.textMuted} wrapMode="word">
+                              {item.message}
+                            </text>
+                          </Show>
+                          <For each={item.notes ?? []}>
+                            {(note) => (
+                              <text fg={theme.textMuted} wrapMode="word">
+                                • {note}
+                              </text>
+                            )}
+                          </For>
+                        </box>
+                      )}
+                    </For>
+                  </box>
+                </Show>
               </box>
             )}
           </Show>

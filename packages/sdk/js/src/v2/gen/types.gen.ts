@@ -1911,6 +1911,17 @@ export type MonitorUsage = {
   cost?: MonitorUsageCost
 }
 
+export type MonitorAccountSnapshot = {
+  key: string
+  label: string
+  state: "live" | "estimated" | "unknown"
+  window?: MonitorWindow
+  usage?: MonitorUsage
+  reset_at?: number
+  message?: string
+  notes?: Array<string>
+}
+
 export type MonitorSnapshot = {
   scope: MonitorScope
   state: "live" | "estimated" | "unknown"
@@ -1922,6 +1933,7 @@ export type MonitorSnapshot = {
   reset_at?: number
   message?: string
   notes?: Array<string>
+  accounts?: Array<MonitorAccountSnapshot>
 }
 
 export type ProviderAuthMethod = {

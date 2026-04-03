@@ -8,6 +8,7 @@ import { Database } from "../../src/storage/db"
 import { Project } from "../../src/project/project"
 import { MessageTable, SessionTable } from "../../src/session/session.sql"
 import { MessageID, SessionID } from "../../src/session/schema"
+import { Config } from "../../src/config/config"
 
 Log.init({ print: false })
 
@@ -252,6 +253,7 @@ describe("provider monitor endpoint", () => {
         await Auth.activate("openai", "chatgpt")
 
         const originalFetch = globalThis.fetch
+        await Config.invalidate()
         globalThis.fetch = mock(async (input: string | URL | Request) => {
           expect(String(input)).toBe("https://chatgpt.com/backend-api/wham/usage")
           return new Response(
@@ -281,7 +283,7 @@ describe("provider monitor endpoint", () => {
           const app = Server.Default()
           const body = (await (
             await app.request(
-              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
             )
           ).json()) as {
             state: string
@@ -306,6 +308,317 @@ describe("provider monitor endpoint", () => {
           expect(body.notes).toContain("Plan: plus.")
           expect(body.notes).toContain("7d quota: 10% used.")
           expect(body.notes).toContain("Credits balance: 12.34.")
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("uses OpenAI custom baseURL codex usage path", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        provider: {
+          openai: {
+            options: {
+              baseURL: "https://example.com/v1",
+            },
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openai", "chatgpt", {
+          type: "oauth",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct_1",
+        })
+        await Auth.activate("openai", "chatgpt")
+
+        const originalFetch = globalThis.fetch
+        await Config.invalidate()
+        globalThis.fetch = mock(async (input: string | URL | Request) => {
+          expect(String(input)).toBe("https://example.com/api/codex/usage")
+          return new Response(
+            JSON.stringify({
+              rate_limit: {
+                primary_window: {
+                  used_percent: 12,
+                  limit_window_seconds: 18_000,
+                  reset_after_seconds: 600,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
+            )
+          ).json()) as {
+            state: string
+            usage?: { requests?: { used?: number } }
+          }
+
+          expect(body.state).toBe("live")
+          expect(body.usage?.requests?.used).toBe(12)
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("preserves OpenAI custom baseURL path prefix for codex usage", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        provider: {
+          openai: {
+            options: {
+              baseURL: "https://example.com/proxy/openai/v1",
+            },
+          },
+        },
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openai", "chatgpt", {
+          type: "oauth",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct_1",
+        })
+        await Auth.activate("openai", "chatgpt")
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async (input: string | URL | Request) => {
+          expect(String(input)).toBe("https://example.com/proxy/openai/api/codex/usage")
+          return new Response(
+            JSON.stringify({
+              rate_limit: {
+                primary_window: {
+                  used_percent: 21,
+                  limit_window_seconds: 18_000,
+                  reset_after_seconds: 600,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
+            )
+          ).json()) as {
+            state: string
+            usage?: { requests?: { used?: number } }
+          }
+
+          expect(body.state).toBe("live")
+          expect(body.usage?.requests?.used).toBe(21)
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("aggregates OpenAI accounts from token context", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const seen = [] as Array<string | undefined>
+        await Auth.put("openai", "chatgpt", {
+          type: "oauth",
+          access: jwt({
+            chatgpt_account_id: "acct_1",
+            organizations: [{ id: "acct_1" }, { id: "acct_2" }],
+          }),
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct_1",
+        })
+        await Auth.activate("openai", "chatgpt")
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+          const id = (init?.headers as Record<string, string>)["ChatGPT-Account-Id"]
+          seen.push(id)
+          return new Response(
+            JSON.stringify({
+              plan_type: id === "acct_1" ? "plus" : "team",
+              rate_limit: {
+                primary_window: {
+                  used_percent: id === "acct_1" ? 20 : 75,
+                  limit_window_seconds: 18_000,
+                  reset_after_seconds: id === "acct_1" ? 3600 : 1200,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
+            )
+          ).json()) as {
+            usage?: { requests?: { used?: number; limit?: number } }
+            notes?: string[]
+            accounts?: Array<{
+              key: string
+              usage?: { requests?: { used?: number } }
+            }>
+          }
+
+          expect(body.usage?.requests?.used).toBe(75)
+          expect(body.usage?.requests?.limit).toBe(100)
+          expect(body.accounts?.map((item) => item.key)).toEqual(["acct_1", "acct_2"])
+          expect(body.accounts?.[1]?.usage?.requests?.used).toBe(75)
+          expect(body.notes).toContain("Aggregated across 2 OpenAI accounts on this profile.")
+          expect(seen).toEqual(["acct_1", "acct_2"])
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("picks the most exhausted OpenAI window on the main snapshot", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openai", "chatgpt", {
+          type: "oauth",
+          access: "access-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct_1",
+        })
+        await Auth.activate("openai", "chatgpt")
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async () => {
+          return new Response(
+            JSON.stringify({
+              plan_type: "plus",
+              rate_limit: {
+                primary_window: {
+                  used_percent: 20,
+                  limit_window_seconds: 18_000,
+                  reset_after_seconds: 3_600,
+                },
+                secondary_window: {
+                  used_percent: 75,
+                  limit_window_seconds: 604_800,
+                  reset_after_seconds: 86_400,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
+            )
+          ).json()) as {
+            window?: { label?: string }
+            usage?: { requests?: { used?: number; limit?: number } }
+            notes?: string[]
+          }
+
+          expect(body.window?.label).toBe("7d quota")
+          expect(body.usage?.requests?.used).toBe(75)
+          expect(body.usage?.requests?.limit).toBe(100)
+          expect(body.notes).toContain("5h quota: 20% used.")
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
+  test.serial("keeps successful OpenAI accounts when one probe fails", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("openai", "chatgpt", {
+          type: "oauth",
+          access: jwt({
+            chatgpt_account_id: "acct_1",
+            organizations: [{ id: "acct_1" }, { id: "acct_2" }],
+          }),
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct_1",
+        })
+        await Auth.activate("openai", "chatgpt")
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+          const id = (init?.headers as Record<string, string>)?.["ChatGPT-Account-Id"]
+          if (id === "acct_2") return new Response("busy", { status: 503 })
+          return new Response(
+            JSON.stringify({
+              rate_limit: {
+                primary_window: {
+                  used_percent: 44,
+                  limit_window_seconds: 18_000,
+                  reset_after_seconds: 600,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            usage?: { requests?: { used?: number } }
+            accounts?: Array<{ key: string }>
+            notes?: string[]
+          }
+
+          expect(body.state).toBe("live")
+          expect(body.usage?.requests?.used).toBe(44)
+          expect(body.accounts?.map((item) => item.key)).toEqual(["acct_1"])
+          expect(body.notes).toContain("Live OpenAI monitor was unavailable (503), showing a local fallback.")
         } finally {
           globalThis.fetch = originalFetch
         }
@@ -929,6 +1242,59 @@ describe("provider monitor endpoint", () => {
     })
   })
 
+  test.serial("uses enterprise Copilot host for OAuth monitor", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Auth.put("github-copilot", "work", {
+          type: "oauth",
+          access: "copilot-token",
+          refresh: "copilot-token",
+          expires: 0,
+          enterpriseUrl: "https://ghe.example.com",
+        })
+        await Auth.activate("github-copilot", "work")
+
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = mock(async (input: string | URL | Request) => {
+          expect(String(input)).toBe("https://copilot-api.ghe.example.com/copilot_internal/user")
+          return new Response(
+            JSON.stringify({
+              copilot_plan: "enterprise",
+              quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+              quota_snapshots: {
+                chat: {
+                  entitlement: 300,
+                  remaining: 240,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
+        }) as unknown as typeof fetch
+
+        try {
+          const app = Server.Default()
+          const body = (await (
+            await app.request(
+              `/provider/monitor?${query({ provider: "github-copilot", profile: "work", model: "gpt-4.1", refresh: true })}`,
+            )
+          ).json()) as {
+            state: string
+            usage?: { requests?: { used?: number } }
+          }
+
+          expect(body.state).toBe("live")
+          expect(body.usage?.requests?.used).toBe(60)
+        } finally {
+          globalThis.fetch = originalFetch
+        }
+      },
+    })
+  })
+
   test.serial("returns live GitHub Copilot quota data from local token files", async () => {
     await using tmp = await tmpdir()
 
@@ -979,6 +1345,244 @@ describe("provider monitor endpoint", () => {
             expect(body.usage?.requests?.used).toBe(40)
             expect(body.usage?.requests?.limit).toBe(100)
             expect(body.notes).toContain(`Using local Copilot token data from ${tmp.path}/github-copilot/hosts.json.`)
+          } finally {
+            globalThis.fetch = originalFetch
+          }
+        },
+      })
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = prevXdg
+    }
+  })
+
+  test.serial("uses enterprise Copilot host from local token files", async () => {
+    await using tmp = await tmpdir()
+
+    const prevXdg = process.env.XDG_CONFIG_HOME
+    await Bun.$`mkdir -p ${tmp.path}/github-copilot`
+    await Bun.write(
+      `${tmp.path}/github-copilot/hosts.json`,
+      JSON.stringify({
+        "ghe.example.com": {
+          oauthToken: "copilot-enterprise-token",
+          user: "octocat-enterprise",
+        },
+      }),
+    )
+    process.env.XDG_CONFIG_HOME = tmp.path
+
+    try {
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const originalFetch = globalThis.fetch
+          globalThis.fetch = mock(async (input: string | URL | Request) => {
+            expect(String(input)).toBe("https://copilot-api.ghe.example.com/copilot_internal/user")
+            return new Response(
+              JSON.stringify({
+                plan: "enterprise",
+                quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+                quota_snapshots: {
+                  chat: {
+                    entitlement: 300,
+                    remaining: 210,
+                  },
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            )
+          }) as unknown as typeof fetch
+
+          try {
+            const app = Server.Default()
+            const body = (await (
+              await app.request(
+                `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
+              )
+            ).json()) as {
+              state: string
+              usage?: { requests?: { used?: number; limit?: number } }
+              notes?: string[]
+            }
+
+            expect(body.state).toBe("live")
+            expect(body.usage?.requests?.used).toBe(90)
+            expect(body.usage?.requests?.limit).toBe(300)
+            expect(body.notes).toContain(`Using local Copilot token data from ${tmp.path}/github-copilot/hosts.json.`)
+          } finally {
+            globalThis.fetch = originalFetch
+          }
+        },
+      })
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = prevXdg
+    }
+  })
+
+  test.serial("aggregates and dedupes GitHub Copilot auth and local accounts", async () => {
+    await using tmp = await tmpdir()
+
+    const prevXdg = process.env.XDG_CONFIG_HOME
+    await Bun.$`mkdir -p ${tmp.path}/github-copilot`
+    await Bun.write(
+      `${tmp.path}/github-copilot/hosts.json`,
+      JSON.stringify({
+        github: {
+          oauthToken: jwt({ sub: "token-2" }),
+          user: "octocat-2",
+        },
+        dup: {
+          oauthToken: "dup-token",
+          accountId: "acct-1",
+          user: "octocat-1",
+        },
+      }),
+    )
+    process.env.XDG_CONFIG_HOME = tmp.path
+
+    try {
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const seen = [] as string[]
+          await Auth.put("github-copilot", "work", {
+            type: "oauth",
+            access: "auth-token",
+            refresh: "auth-token",
+            expires: 0,
+            accountId: "acct-1",
+          })
+          await Auth.activate("github-copilot", "work")
+
+          const originalFetch = globalThis.fetch
+          globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+            const auth = (init?.headers as Record<string, string>).Authorization
+            seen.push(auth)
+            if (auth === "token auth-token" || auth === "token dup-token") {
+              return new Response(
+                JSON.stringify({
+                  user_id: "acct-1",
+                  copilot_plan: "individual",
+                  quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+                  quota_snapshots: {
+                    chat: { entitlement: 300, remaining: 200 },
+                  },
+                }),
+                { status: 200, headers: { "Content-Type": "application/json" } },
+              )
+            }
+            return new Response(
+              JSON.stringify({
+                user_id: "acct-2",
+                plan: "team",
+                quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+                quota_snapshots: {
+                  chat: { entitlement: 300, remaining: 30 },
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            )
+          }) as unknown as typeof fetch
+
+          try {
+            const app = Server.Default()
+            const body = (await (
+              await app.request(
+                `/provider/monitor?${query({ provider: "github-copilot", profile: "work", model: "gpt-4.1", refresh: true })}`,
+              )
+            ).json()) as {
+              usage?: { requests?: { used?: number; limit?: number } }
+              notes?: string[]
+              accounts?: Array<{
+                key: string
+                usage?: { requests?: { used?: number } }
+              }>
+            }
+
+            expect(body.usage?.requests?.used).toBe(270)
+            expect(body.usage?.requests?.limit).toBe(300)
+            expect(body.accounts?.map((item) => item.key)).toEqual(["acct-1", "acct-2"])
+            expect(body.notes).toContain("Aggregated across 2 GitHub Copilot accounts.")
+            expect(seen).toContain("token auth-token")
+            expect(seen).toContain("token dup-token")
+            expect(seen.length).toBe(3)
+          } finally {
+            globalThis.fetch = originalFetch
+          }
+        },
+      })
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = prevXdg
+    }
+  })
+
+  test.serial("keeps github.com and enterprise Copilot accounts separate when ids match", async () => {
+    await using tmp = await tmpdir()
+
+    const prevXdg = process.env.XDG_CONFIG_HOME
+    await Bun.$`mkdir -p ${tmp.path}/github-copilot`
+    await Bun.write(
+      `${tmp.path}/github-copilot/hosts.json`,
+      JSON.stringify({
+        github: {
+          oauthToken: "github-token",
+          accountId: "acct-1",
+          user: "octocat",
+        },
+        enterprise: {
+          oauthToken: "enterprise-token",
+          accountId: "acct-1",
+          user: "octocat",
+          host: "github.enterprise.test",
+        },
+      }),
+    )
+    process.env.XDG_CONFIG_HOME = tmp.path
+
+    try {
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const originalFetch = globalThis.fetch
+          globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = String(input)
+            const auth = (init?.headers as Record<string, string>).Authorization
+            return new Response(
+              JSON.stringify({
+                user_id: "acct-1",
+                plan: url.includes("github.enterprise.test") ? "enterprise" : "individual",
+                quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+                quota_snapshots: {
+                  chat: { entitlement: 300, remaining: auth === "token enterprise-token" ? 30 : 200 },
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            )
+          }) as unknown as typeof fetch
+
+          try {
+            const app = Server.Default()
+            const body = (await (
+              await app.request(
+                `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
+              )
+            ).json()) as {
+              usage?: { requests?: { used?: number; limit?: number } }
+              accounts?: Array<{
+                key: string
+                usage?: { requests?: { used?: number } }
+              }>
+              notes?: string[]
+            }
+
+            expect(body.usage?.requests?.used).toBe(270)
+            expect(body.usage?.requests?.limit).toBe(300)
+            expect(body.accounts?.map((item) => item.key)).toEqual(["acct-1", "github.enterprise.test:acct-1"])
+            expect(body.accounts?.map((item) => item.usage?.requests?.used)).toEqual([100, 270])
+            expect(body.notes).toContain("Aggregated across 2 GitHub Copilot accounts.")
           } finally {
             globalThis.fetch = originalFetch
           }
@@ -1044,6 +1648,76 @@ describe("provider monitor endpoint", () => {
         }
       },
     })
+  })
+
+  test.serial("keeps successful Copilot accounts when one probe fails", async () => {
+    await using tmp = await tmpdir()
+
+    const prevXdg = process.env.XDG_CONFIG_HOME
+    await Bun.$`mkdir -p ${tmp.path}/github-copilot`
+    await Bun.write(
+      `${tmp.path}/github-copilot/hosts.json`,
+      JSON.stringify({
+        first: {
+          oauthToken: "first-token",
+          user: "octocat",
+        },
+        second: {
+          oauthToken: "second-token",
+          user: "octocat",
+        },
+      }),
+    )
+    process.env.XDG_CONFIG_HOME = tmp.path
+
+    try {
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const originalFetch = globalThis.fetch
+          globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+            const auth = (init?.headers as Record<string, string>).Authorization
+            if (auth === "token second-token") return new Response("busy", { status: 503 })
+            return new Response(
+              JSON.stringify({
+                plan: "team",
+                user_id: "acct-1",
+                quota_reset_date_utc: "2026-05-01T00:00:00.000Z",
+                quota_snapshots: {
+                  chat: { entitlement: 300, remaining: 180 },
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            )
+          }) as unknown as typeof fetch
+
+          try {
+            const app = Server.Default()
+            const body = (await (
+              await app.request(
+                `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
+              )
+            ).json()) as {
+              state: string
+              usage?: { requests?: { used?: number } }
+              accounts?: Array<{ key: string }>
+              notes?: string[]
+            }
+
+            expect(body.state).toBe("live")
+            expect(body.usage?.requests?.used).toBe(120)
+            expect(body.accounts?.length).toBe(1)
+            expect(body.accounts?.[0]?.key).toBe("acct-1")
+            expect(body.notes).toContain("Live GitHub Copilot monitor was unavailable (503), showing a local fallback.")
+          } finally {
+            globalThis.fetch = originalFetch
+          }
+        },
+      })
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = prevXdg
+    }
   })
 
   test.serial("unscoped fallback still uses legacy unattributed history", async () => {
