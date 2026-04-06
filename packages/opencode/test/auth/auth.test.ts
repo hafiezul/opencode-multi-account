@@ -1,6 +1,6 @@
 import path from "path"
 import { beforeEach, expect, test } from "bun:test"
-import { Auth } from "../../src/auth"
+import { Auth, normalizeProfile } from "../../src/auth"
 import { Global } from "../../src/global"
 
 const file = path.join(Global.Path.data, "auth.json")
@@ -242,4 +242,14 @@ test("remove deletes both trailing-slash and normalized keys", async () => {
   const data = await Auth.all()
   expect(data["https://example.com"]).toBeUndefined()
   expect(data["https://example.com/"]).toBeUndefined()
+})
+
+test("normalizeProfile treats blank and default as default", () => {
+  expect(normalizeProfile()).toBeUndefined()
+  expect(normalizeProfile("")).toBeUndefined()
+  expect(normalizeProfile("   ")).toBeUndefined()
+  expect(normalizeProfile("default")).toBeUndefined()
+  expect(normalizeProfile(" default ")).toBeUndefined()
+  expect(normalizeProfile("work")).toBe("work")
+  expect(normalizeProfile(" work ")).toBe("work")
 })

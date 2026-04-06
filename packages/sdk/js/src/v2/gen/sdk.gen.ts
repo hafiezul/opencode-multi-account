@@ -97,6 +97,8 @@ import type {
   ProviderOauthAuthorizeResponses,
   ProviderOauthCallbackErrors,
   ProviderOauthCallbackResponses,
+  ProviderRemoveProfileErrors,
+  ProviderRemoveProfileResponses,
   PtyConnectErrors,
   PtyConnectResponses,
   PtyCreateErrors,
@@ -391,6 +393,7 @@ export class Auth extends HeyApiClient {
   public set<ThrowOnError extends boolean = false>(
     parameters: {
       providerID: string
+      profile?: string
       auth?: Auth3
     },
     options?: Options<never, ThrowOnError>,
@@ -401,7 +404,8 @@ export class Auth extends HeyApiClient {
         {
           args: [
             { in: "path", key: "providerID" },
-            { key: "auth", map: "body" },
+            { in: "body", key: "profile" },
+            { in: "body", key: "auth" },
           ],
         },
       ],
@@ -2765,6 +2769,7 @@ export class Oauth extends HeyApiClient {
       directory?: string
       workspace?: string
       method?: number
+      profile?: string
       inputs?: {
         [key: string]: string
       }
@@ -2780,6 +2785,7 @@ export class Oauth extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "method" },
+            { in: "body", key: "profile" },
             { in: "body", key: "inputs" },
           ],
         },
@@ -2812,6 +2818,7 @@ export class Oauth extends HeyApiClient {
       directory?: string
       workspace?: string
       method?: number
+      profile?: string
       code?: string
     },
     options?: Options<never, ThrowOnError>,
@@ -2825,6 +2832,7 @@ export class Oauth extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "method" },
+            { in: "body", key: "profile" },
             { in: "body", key: "code" },
           ],
         },
@@ -2888,7 +2896,7 @@ export class Provider extends HeyApiClient {
       providerID: string
       directory?: string
       workspace?: string
-      profile?: string
+      profile: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2914,6 +2922,44 @@ export class Provider extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Remove provider profile
+   *
+   * Remove a single auth profile for a provider.
+   */
+  public removeProfile<ThrowOnError extends boolean = false>(
+    parameters: {
+      providerID: string
+      directory?: string
+      workspace?: string
+      profile: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "providerID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "profile" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ProviderRemoveProfileResponses,
+      ProviderRemoveProfileErrors,
+      ThrowOnError
+    >({
+      url: "/provider/{providerID}/profile",
+      ...options,
+      ...params,
     })
   }
 

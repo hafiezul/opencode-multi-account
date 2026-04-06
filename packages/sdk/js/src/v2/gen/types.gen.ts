@@ -574,6 +574,10 @@ export type AssistantMessage = {
   parentID: string
   modelID: string
   providerID: string
+  auth?: {
+    profile: string
+    accountID?: string
+  }
   mode: string
   agent: string
   path: {
@@ -2289,7 +2293,11 @@ export type AuthRemoveResponses = {
 export type AuthRemoveResponse = AuthRemoveResponses[keyof AuthRemoveResponses]
 
 export type AuthSetData = {
-  body?: Auth
+  body?: {
+    profile?: string
+    auth?: Auth
+    [key: string]: unknown | string | Auth | undefined
+  }
   path: {
     providerID: string
   }
@@ -4357,7 +4365,7 @@ export type ProviderListResponses = {
 export type ProviderListResponse = ProviderListResponses[keyof ProviderListResponses]
 
 export type ProviderActivateData = {
-  body?: {
+  body: {
     /**
      * Profile name
      */
@@ -4380,7 +4388,12 @@ export type ProviderActivateErrors = {
   /**
    * Bad request
    */
-  400: BadRequestError
+  400:
+    | {
+        name: string
+        message: string
+      }
+    | BadRequestError
 }
 
 export type ProviderActivateError = ProviderActivateErrors[keyof ProviderActivateErrors]
@@ -4396,6 +4409,51 @@ export type ProviderActivateResponses = {
 }
 
 export type ProviderActivateResponse = ProviderActivateResponses[keyof ProviderActivateResponses]
+
+export type ProviderRemoveProfileData = {
+  body?: never
+  path: {
+    /**
+     * Provider ID
+     */
+    providerID: string
+  }
+  query: {
+    directory?: string
+    workspace?: string
+    /**
+     * Profile name
+     */
+    profile: string
+  }
+  url: "/provider/{providerID}/profile"
+}
+
+export type ProviderRemoveProfileErrors = {
+  /**
+   * Bad request
+   */
+  400:
+    | {
+        name: string
+        message: string
+      }
+    | BadRequestError
+}
+
+export type ProviderRemoveProfileError = ProviderRemoveProfileErrors[keyof ProviderRemoveProfileErrors]
+
+export type ProviderRemoveProfileResponses = {
+  /**
+   * Remaining provider profiles
+   */
+  200: {
+    active: string
+    names: Array<string>
+  } | null
+}
+
+export type ProviderRemoveProfileResponse = ProviderRemoveProfileResponses[keyof ProviderRemoveProfileResponses]
 
 export type ProviderMonitorData = {
   body?: never
@@ -4473,6 +4531,10 @@ export type ProviderOauthAuthorizeData = {
      */
     method: number
     /**
+     * Profile name
+     */
+    profile?: string
+    /**
      * Prompt inputs
      */
     inputs?: {
@@ -4516,6 +4578,10 @@ export type ProviderOauthCallbackData = {
      * Auth method index
      */
     method: number
+    /**
+     * Profile name
+     */
+    profile?: string
     /**
      * OAuth authorization code
      */

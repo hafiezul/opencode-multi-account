@@ -6,9 +6,9 @@ import { Global } from "../global"
 import { AppFileSystem } from "../filesystem"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
+export const DEFAULT_PROFILE = "default"
 
 const file = path.join(Global.Path.data, "auth.json")
-const profile = "default"
 let rev = 0
 
 const fail = (message: string) => (cause: unknown) => new Auth.AuthError({ message, cause })
@@ -16,6 +16,12 @@ const norm = (key: string) => key.replace(/\/+$/, "")
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 const bump = () => ++rev
+
+export function normalizeProfile(value?: string | null) {
+  const name = value?.trim()
+  if (!name || name === DEFAULT_PROFILE) return
+  return name
+}
 
 export namespace Auth {
   export class Oauth extends Schema.Class<Oauth>("OAuth")({
@@ -76,7 +82,7 @@ export namespace Auth {
       const info = (value: unknown) => Option.getOrUndefined(decode(value))
 
       const parse = (value: unknown) => {
-        if (info(value)) return { active: profile, profiles: { [profile]: value } }
+        if (info(value)) return { active: DEFAULT_PROFILE, profiles: { [DEFAULT_PROFILE]: value } }
         if (!isRecord(value) || !isRecord(value.profiles)) return
         return {
           active: typeof value.active === "string" ? value.active : undefined,
@@ -95,7 +101,7 @@ export namespace Auth {
 
       const pick = (profiles: Record<string, Info>, active?: string) => {
         if (active && profiles[active]) return active
-        if (profiles[profile]) return profile
+        if (profiles[DEFAULT_PROFILE]) return DEFAULT_PROFILE
         return Object.keys(profiles)[0]
       }
 
@@ -197,8 +203,8 @@ export namespace Auth {
       })
 
       const set = Effect.fn("Auth.set")(function* (key: string, info: Info) {
-        yield* put(key, profile, info)
-        yield* activate(key, profile)
+        yield* put(key, DEFAULT_PROFILE, info)
+        yield* activate(key, DEFAULT_PROFILE)
       })
 
       const remove = Effect.fn("Auth.remove")(function* (key: string) {
@@ -215,7 +221,13 @@ export namespace Auth {
         const id = norm(key)
         const data = yield* read()
         const parsed = parse(data[id] ?? data[id + "/"])
-        if (!parsed) return
+        if (!parsed) {
+          return yield* new AuthError({ message: `Auth profile not found: ${name}` })
+        }
+        const item = entryInfo(parsed)
+        if (!item || !item.profiles[name]) {
+          return yield* new AuthError({ message: `Auth profile not found: ${name}` })
+        }
         const profiles = Object.fromEntries(Object.entries(parsed.profiles).filter(([item]) => item !== name))
         delete data[key]
         delete data[id]

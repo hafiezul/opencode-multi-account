@@ -655,7 +655,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       onSelect: () => {
         const options = sync.data.provider.flatMap((item) => {
           const profile = sync.data.provider_next.profile[item.id]
-          if (!profile || profile.names.length < 2) return []
+          if (!profile || profile.names.length < 1) return []
           return profile.names
         })
         if (options.length === 0) {

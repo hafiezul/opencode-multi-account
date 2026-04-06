@@ -10,7 +10,7 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Log } from "../../util/log"
-import { Auth } from "../../auth"
+import { Auth, normalizeProfile } from "../../auth"
 import { Monitor } from "../../monitor"
 
 const log = Log.create({ service: "server" })
@@ -18,6 +18,32 @@ const Profile = z.object({
   active: z.string(),
   names: z.array(z.string()),
 })
+
+const AuthError = z.object({
+  name: z.string(),
+  message: z.string(),
+})
+
+const BadRequest = z
+  .object({
+    data: z.any(),
+    errors: z.array(z.record(z.string(), z.any())),
+    success: z.literal(false),
+  })
+  .meta({
+    ref: "BadRequestError",
+  })
+
+const AuthErrorResponse = {
+  400: {
+    description: "Bad request",
+    content: {
+      "application/json": {
+        schema: resolver(z.union([AuthError, BadRequest])),
+      },
+    },
+  },
+} as const
 
 const PublicModel = Provider.Model.omit({
   options: true,
@@ -134,7 +160,7 @@ export const ProviderRoutes = lazy(() =>
               },
             },
           },
-          ...errors(400),
+          ...AuthErrorResponse,
         },
       }),
       validator(
@@ -157,6 +183,48 @@ export const ProviderRoutes = lazy(() =>
         return c.json({
           active: item!.active!,
           names: Object.keys(item!.profiles).sort(),
+        })
+      },
+    )
+    .delete(
+      "/:providerID/profile",
+      describeRoute({
+        summary: "Remove provider profile",
+        description: "Remove a single auth profile for a provider.",
+        operationId: "provider.removeProfile",
+        responses: {
+          200: {
+            description: "Remaining provider profiles",
+            content: {
+              "application/json": {
+                schema: resolver(Profile.nullable()),
+              },
+            },
+          },
+          ...AuthErrorResponse,
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          providerID: ProviderID.zod.meta({ description: "Provider ID" }),
+        }),
+      ),
+      validator(
+        "query",
+        z.object({
+          profile: z.string().meta({ description: "Profile name" }),
+        }),
+      ),
+      async (c) => {
+        const providerID = c.req.valid("param").providerID
+        const profile = c.req.valid("query").profile
+        await Auth.removeProfile(providerID, profile)
+        const item = await Auth.entry(providerID)
+        if (!item?.active) return c.json(null)
+        return c.json({
+          active: item.active,
+          names: Object.keys(item.profiles).sort(),
         })
       },
     )
@@ -252,15 +320,17 @@ export const ProviderRoutes = lazy(() =>
         "json",
         z.object({
           method: z.number().meta({ description: "Auth method index" }),
+          profile: z.string().optional().meta({ description: "Profile name" }),
           inputs: z.record(z.string(), z.string()).optional().meta({ description: "Prompt inputs" }),
         }),
       ),
       async (c) => {
         const providerID = c.req.valid("param").providerID
-        const { method, inputs } = c.req.valid("json")
+        const { method, profile, inputs } = c.req.valid("json")
         const result = await ProviderAuth.authorize({
           providerID,
           method,
+          profile: normalizeProfile(profile),
           inputs,
         })
         return c.json(result)
@@ -294,15 +364,17 @@ export const ProviderRoutes = lazy(() =>
         "json",
         z.object({
           method: z.number().meta({ description: "Auth method index" }),
+          profile: z.string().optional().meta({ description: "Profile name" }),
           code: z.string().optional().meta({ description: "OAuth authorization code" }),
         }),
       ),
       async (c) => {
         const providerID = c.req.valid("param").providerID
-        const { method, code } = c.req.valid("json")
+        const { method, profile, code } = c.req.valid("json")
         await ProviderAuth.callback({
           providerID,
           method,
+          profile: normalizeProfile(profile),
           code,
         })
         return c.json(true)

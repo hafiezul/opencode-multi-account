@@ -14,6 +14,8 @@ import { useKeyboard } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
 import { useLocal } from "../context/local"
+import { useKeybind } from "../context/keybind"
+import { normalizeProfile } from "../../../../auth"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -34,110 +36,98 @@ export function createDialogProviderOptions() {
     return pipe(
       sync.data.provider_next.all,
       sortBy((x) => PROVIDER_PRIORITY[x.id] ?? 99),
-      map((provider) => {
-        const consoleManaged = isConsoleManagedProvider(sync.data.console_state.consoleManagedProviders, provider.id)
-        const connected = sync.data.provider_next.connected.includes(provider.id)
+      map((provider) => ({
+        title: provider.name,
+        value: provider.id,
+        description: {
+          opencode: "(Recommended)",
+          anthropic: "(API key)",
+          openai: "(ChatGPT Plus/Pro or API key)",
+          "opencode-go": "Low cost subscription for everyone",
+        }[provider.id],
+        category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Other",
+        async onSelect() {
+          const methods = sync.data.provider_auth[provider.id] ?? [
+            {
+              type: "api",
+              label: "API key",
+            },
+          ]
+          let index: number | null = 0
+          if (methods.length > 1) {
+            index = await new Promise<number | null>((resolve) => {
+              dialog.replace(
+                () => (
+                  <DialogSelect
+                    title="Select auth method"
+                    options={methods.map((x, index) => ({
+                      title: x.label,
+                      value: index,
+                    }))}
+                    onSelect={(option) => resolve(option.value)}
+                  />
+                ),
+                () => resolve(null),
+              )
+            })
+          }
+          if (index == null) return
+          const method = methods[index]
+          const profile = await DialogPrompt.show(dialog, "Profile name", {
+            placeholder: "Default profile (optional)",
+          })
+          if (profile === null) return
+          if (method.type === "oauth") {
+            let inputs: Record<string, string> | undefined
+            if (method.prompts?.length) {
+              const value = await PromptsMethod({
+                dialog,
+                prompts: method.prompts,
+              })
+              if (!value) return
+              inputs = value
+            }
 
-        return {
-          title: provider.name,
-          value: provider.id,
-          description: {
-            opencode: "(Recommended)",
-            anthropic: "(API key)",
-            openai: "(ChatGPT Plus/Pro or API key)",
-            "opencode-go": "Low cost subscription for everyone",
-          }[provider.id],
-          footer: consoleManaged ? sync.data.console_state.activeOrgName : undefined,
-          category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Other",
-          gutter: connected ? <text fg={theme.success}>✓</text> : undefined,
-          async onSelect() {
-            if (consoleManaged) return
-
-            const methods = sync.data.provider_auth[provider.id] ?? [
-              {
-                type: "api",
-                label: "API key",
-              },
-            ]
-            let index: number | null = 0
-            if (methods.length > 1) {
-              index = await new Promise<number | null>((resolve) => {
-                dialog.replace(
-                  () => (
-                    <DialogSelect
-                      title="Select auth method"
-                      options={methods.map((x, index) => ({
-                        title: x.label,
-                        value: index,
-                      }))}
-                      onSelect={(option) => resolve(option.value)}
-                    />
-                  ),
-                  () => resolve(null),
-                )
+            const result = await sdk.client.provider.oauth.authorize({
+              providerID: provider.id,
+              method: index,
+              profile,
+              inputs,
+            })
+            if (result.error) {
+              toast.show({
+                variant: "error",
+                message: JSON.stringify(result.error),
               })
             }
-            if (index == null) return
-            const method = methods[index]
-            if (method.type === "oauth") {
-              let inputs: Record<string, string> | undefined
-              if (method.prompts?.length) {
-                const value = await PromptsMethod({
-                  dialog,
-                  prompts: method.prompts,
-                })
-                if (!value) return
-                inputs = value
-              }
-
-              const result = await sdk.client.provider.oauth.authorize({
-                providerID: provider.id,
-                method: index,
-                inputs,
-              })
-              if (result.error) {
-                toast.show({
-                  variant: "error",
-                  message: JSON.stringify(result.error),
-                })
-                dialog.clear()
-                return
-              }
-              if (result.data?.method === "code") {
-                dialog.replace(() => (
-                  <CodeMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-              if (result.data?.method === "auto") {
-                dialog.replace(() => (
-                  <AutoMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-            }
-            if (method.type === "api") {
-              let metadata: Record<string, string> | undefined
-              if (method.prompts?.length) {
-                const value = await PromptsMethod({ dialog, prompts: method.prompts })
-                if (!value) return
-                metadata = value
-              }
-              return dialog.replace(() => (
-                <ApiMethod providerID={provider.id} title={method.label} metadata={metadata} />
+            if (result.data?.method === "code") {
+              dialog.replace(() => (
+                <CodeMethod
+                  providerID={provider.id}
+                  profile={profile}
+                  title={method.label}
+                  index={index}
+                  authorization={result.data!}
+                />
               ))
             }
-          },
-        }
-      }),
+            if (result.data?.method === "auto") {
+              dialog.replace(() => (
+                <AutoMethod
+                  providerID={provider.id}
+                  profile={profile}
+                  title={method.label}
+                  index={index}
+                  authorization={result.data!}
+                />
+              ))
+            }
+          }
+          if (method.type === "api") {
+            return dialog.replace(() => <ApiMethod providerID={provider.id} profile={profile} title={method.label} />)
+          }
+        },
+      })),
     )
   })
   return options
@@ -154,62 +144,142 @@ export function DialogProviderProfile() {
   const sdk = useSDK()
   const toast = useToast()
   const local = useLocal()
+  const keybind = useKeybind()
+  const { theme } = useTheme()
+  const [toDelete, setToDelete] = createSignal<string>()
+
+  function unavailable(
+    prev: { providerID: string; modelID: string },
+    next: { providerID: string; modelID: string } | undefined,
+    action: string,
+  ) {
+    return next
+      ? `Model ${prev.providerID}/${prev.modelID} is unavailable after ${action}; using ${next.providerID}/${next.modelID}`
+      : `Model ${prev.providerID}/${prev.modelID} is unavailable after ${action}`
+  }
+
+  async function remove(option: { providerID: string; name: string }) {
+    const provider = sync.data.provider.find((item) => item.id === option.providerID)
+    if (!provider) return
+    const prev = local.model.current()
+    const result = await sdk.client.provider.removeProfile({
+      providerID: option.providerID,
+      profile: option.name,
+    })
+    if (result.error) {
+      toast.show({
+        variant: "error",
+        message: JSON.stringify(result.error),
+      })
+      return
+    }
+    await sdk.client.instance.dispose()
+    await sync.bootstrap()
+    const next = local.model.current()
+    const same = prev && next && prev.providerID === next.providerID && prev.modelID === next.modelID
+    if (prev && !same) {
+      toast.show({
+        variant: "info",
+        message: unavailable(prev, next, "deleting the profile"),
+        duration: 3000,
+      })
+    }
+    toast.show({
+      variant: "info",
+      message: `Deleted ${provider.name} profile ${option.name}`,
+      duration: 3000,
+    })
+    setToDelete(undefined)
+    const has = sync.data.provider.some((item) => {
+      const profile = sync.data.provider_next.profile[item.id]
+      return !!profile && profile.names.length >= 1
+    })
+    if (!has) {
+      dialog.clear()
+    }
+  }
 
   const options = createMemo(() =>
     sync.data.provider.flatMap((provider) => {
       const item = sync.data.provider_next.profile[provider.id]
-      if (!item || item.names.length < 2) return []
-      return item.names.map((name) => ({
-        title: name,
-        value: { providerID: provider.id, name },
-        category: provider.name,
-        footer: name === item.active ? "Active" : undefined,
-        async onSelect() {
-          if (name === item.active) {
-            dialog.clear()
-            return
-          }
-          const prev = local.model.current()
-          const result = await sdk.client.provider.activate({
-            providerID: provider.id,
-            profile: name,
-          })
-          if (result.error) {
-            toast.show({
-              variant: "error",
-              message: JSON.stringify(result.error),
+      if (!item || item.names.length < 1) return []
+      return item.names.map((name) => {
+        const id = `${provider.id}:${name}`
+        return {
+          title: toDelete() === id ? `Press ${keybind.print("provider_profile_delete")} again to confirm` : name,
+          bg: toDelete() === id ? theme.error : undefined,
+          value: { providerID: provider.id, name },
+          category: provider.name,
+          footer: name === item.active ? "Active" : undefined,
+          async onSelect() {
+            setToDelete(undefined)
+            if (name === item.active) {
+              dialog.clear()
+              return
+            }
+            const prev = local.model.current()
+            const result = await sdk.client.provider.activate({
+              providerID: provider.id,
+              profile: name,
             })
-            return
-          }
-          await sync.bootstrap()
-          const next = local.model.current()
-          const same = prev && next && prev.providerID === next.providerID && prev.modelID === next.modelID
-          if (prev && !same) {
+            if (result.error) {
+              toast.show({
+                variant: "error",
+                message: JSON.stringify(result.error),
+              })
+              return
+            }
+            await sync.bootstrap()
+            const next = local.model.current()
+            const same = prev && next && prev.providerID === next.providerID && prev.modelID === next.modelID
+            if (prev && !same) {
+              toast.show({
+                variant: "info",
+                message: unavailable(prev, next, "the profile switch"),
+                duration: 3000,
+              })
+            }
             toast.show({
               variant: "info",
-              message: next
-                ? `Model ${prev.providerID}/${prev.modelID} is unavailable after the profile switch; using ${next.providerID}/${next.modelID}`
-                : `Model ${prev.providerID}/${prev.modelID} is unavailable after the profile switch`,
+              message: `Switched ${provider.name} to ${name}`,
               duration: 3000,
             })
-          }
-          toast.show({
-            variant: "info",
-            message: `Switched ${provider.name} to ${name}`,
-            duration: 3000,
-          })
-          dialog.clear()
-        },
-      }))
+            dialog.clear()
+          },
+        }
+      })
     }),
   )
 
-  return <DialogSelect title="Switch provider profile" options={options()} />
+  return (
+    <DialogSelect
+      title="Switch provider profile"
+      options={options()}
+      onMove={() => {
+        setToDelete(undefined)
+      }}
+      keybind={[
+        {
+          keybind: keybind.all.provider_profile_delete?.[0],
+          title: "delete",
+          onTrigger: async (option) => {
+            const id = `${option.value.providerID}:${option.value.name}`
+            if (toDelete() === id) {
+              await remove(option.value)
+              return
+            }
+            setToDelete(id)
+          },
+        },
+      ]}
+    />
+  )
 }
 
 interface AutoMethodProps {
   index: number
   providerID: string
+  profile?: string
   title: string
   authorization: ProviderAuthAuthorization
 }
@@ -233,6 +303,7 @@ function AutoMethod(props: AutoMethodProps) {
     const result = await sdk.client.provider.oauth.callback({
       providerID: props.providerID,
       method: props.index,
+      profile: props.profile,
     })
     if (result.error) {
       dialog.clear()
@@ -269,6 +340,7 @@ interface CodeMethodProps {
   index: number
   title: string
   providerID: string
+  profile?: string
   authorization: ProviderAuthAuthorization
 }
 function CodeMethod(props: CodeMethodProps) {
@@ -286,6 +358,7 @@ function CodeMethod(props: CodeMethodProps) {
         const { error } = await sdk.client.provider.oauth.callback({
           providerID: props.providerID,
           method: props.index,
+          profile: props.profile,
           code: value,
         })
         if (!error) {
@@ -311,6 +384,7 @@ function CodeMethod(props: CodeMethodProps) {
 
 interface ApiMethodProps {
   providerID: string
+  profile?: string
   title: string
   metadata?: Record<string, string>
 }
@@ -354,6 +428,7 @@ function ApiMethod(props: ApiMethodProps) {
         if (!value) return
         await sdk.client.auth.set({
           providerID: props.providerID,
+          profile: normalizeProfile(props.profile),
           auth: {
             type: "api",
             key: value,

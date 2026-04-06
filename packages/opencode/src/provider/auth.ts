@@ -1,6 +1,6 @@
 import type { AuthOAuthResult, Hooks } from "@opencode-ai/plugin"
 import { NamedError } from "@opencode-ai/util/error"
-import { Auth } from "@/auth"
+import { Auth, normalizeProfile } from "@/auth"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 import { Plugin } from "../plugin"
@@ -99,15 +99,26 @@ export namespace ProviderAuth {
     readonly authorize: (input: {
       providerID: ProviderID
       method: number
+      profile?: string
       inputs?: Record<string, string>
     }) => Effect.Effect<Authorization | undefined, Error>
-    readonly callback: (input: { providerID: ProviderID; method: number; code?: string }) => Effect.Effect<void, Error>
+    readonly callback: (input: {
+      providerID: ProviderID
+      method: number
+      profile?: string
+      code?: string
+    }) => Effect.Effect<void, Error>
   }
+
+  type PendingKey = `${ProviderID}:${string}:${number}`
 
   interface State {
     hooks: Record<ProviderID, Hook>
-    pending: Map<ProviderID, AuthOAuthResult>
+    pending: Map<PendingKey, AuthOuathResult>
   }
+
+  const key = (providerID: ProviderID, profile: string | undefined, method: number) =>
+    `${providerID}:${normalizeProfile(profile) ?? ""}:${method}` as PendingKey
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/ProviderAuth") {}
 
@@ -126,10 +137,10 @@ export namespace ProviderAuth {
                   ? Result.succeed([ProviderID.make(x.auth.provider), x.auth] as const)
                   : Result.failVoid,
               ),
-            ),
-            pending: new Map<ProviderID, AuthOAuthResult>(),
-          }
-        }),
+              pending: new Map<PendingKey, AuthOuathResult>(),
+            }
+          }),
+        ),
       )
 
       const methods = Effect.fn("ProviderAuth.methods")(function* () {
@@ -165,6 +176,7 @@ export namespace ProviderAuth {
       const authorize = Effect.fn("ProviderAuth.authorize")(function* (input: {
         providerID: ProviderID
         method: number
+        profile?: string
         inputs?: Record<string, string>
       }) {
         const { hooks, pending } = yield* InstanceState.get(state)
@@ -181,7 +193,7 @@ export namespace ProviderAuth {
         }
 
         const result = yield* Effect.promise(() => method.authorize(input.inputs))
-        pending.set(input.providerID, result)
+        pending.set(key(input.providerID, input.profile, input.method), result)
         return {
           url: result.url,
           method: result.method,
@@ -192,10 +204,12 @@ export namespace ProviderAuth {
       const callback = Effect.fn("ProviderAuth.callback")(function* (input: {
         providerID: ProviderID
         method: number
+        profile?: string
         code?: string
       }) {
         const pending = (yield* InstanceState.get(state)).pending
-        const match = pending.get(input.providerID)
+        const name = normalizeProfile(input.profile)
+        const match = pending.get(key(input.providerID, input.profile, input.method))
         if (!match) return yield* Effect.fail(new OauthMissing({ providerID: input.providerID }))
         if (match.method === "code" && !input.code) {
           return yield* Effect.fail(new OauthCodeMissing({ providerID: input.providerID }))
@@ -205,23 +219,45 @@ export namespace ProviderAuth {
           match.method === "code" ? match.callback(input.code!) : match.callback(),
         )
         if (!result || result.type !== "success") return yield* Effect.fail(new OauthCallbackFailed({}))
+        const providerID = ProviderID.make(result.provider ?? input.providerID)
 
         if ("key" in result) {
-          yield* auth.set(input.providerID, {
-            type: "api",
-            key: result.key,
-          })
+          if (!name) {
+            yield* auth.set(providerID, {
+              type: "api",
+              key: result.key,
+            })
+          }
+          if (name) {
+            yield* auth.put(providerID, name, {
+              type: "api",
+              key: result.key,
+            })
+            yield* auth.activate(providerID, name)
+          }
         }
 
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extra } = result
-          yield* auth.set(input.providerID, {
-            type: "oauth",
-            access,
-            refresh,
-            expires,
-            ...extra,
-          })
+          if (!name) {
+            yield* auth.set(providerID, {
+              type: "oauth",
+              access,
+              refresh,
+              expires,
+              ...extra,
+            })
+          }
+          if (name) {
+            yield* auth.put(providerID, name, {
+              type: "oauth",
+              access,
+              refresh,
+              expires,
+              ...extra,
+            })
+            yield* auth.activate(providerID, name)
+          }
         }
       })
 
@@ -242,12 +278,13 @@ export namespace ProviderAuth {
   export async function authorize(input: {
     providerID: ProviderID
     method: number
+    profile?: string
     inputs?: Record<string, string>
   }): Promise<Authorization | undefined> {
     return runPromise((svc) => svc.authorize(input))
   }
 
-  export async function callback(input: { providerID: ProviderID; method: number; code?: string }) {
+  export async function callback(input: { providerID: ProviderID; method: number; profile?: string; code?: string }) {
     return runPromise((svc) => svc.callback(input))
   }
 }

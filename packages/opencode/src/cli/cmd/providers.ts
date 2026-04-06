@@ -1,4 +1,4 @@
-import { Auth } from "../../auth"
+import { Auth, normalizeProfile } from "../../auth"
 import { cmd } from "./cmd"
 import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
@@ -63,12 +63,13 @@ const invalid = Symbol("invalid-provider")
 class AmbiguousError extends Error {}
 
 async function saveAuth(provider: string, info: Auth.Info, profile?: string) {
-  if (!profile) {
+  const name = normalizeProfile(profile)
+  if (!name) {
     await Auth.set(provider, info)
     return
   }
-  await Auth.put(provider, profile, info)
-  await Auth.activate(provider, profile)
+  await Auth.put(provider, name, info)
+  await Auth.activate(provider, name)
 }
 
 function isHttpUrl(value: string) {
