@@ -47,8 +47,10 @@ export function monitorLabel(snap?: MonitorSnapshot) {
 export function monitorHint(snap?: MonitorSnapshot) {
   if (!snap) return
   const value = pct(snap.usage?.cost) ?? pct(snap.usage?.tokens) ?? pct(snap.usage?.requests)
-  if (value === undefined) return monitorLabel(snap)
-  return `${value}%`
+  if (value !== undefined) return `${value}%`
+  // Show cost amount when available but no limit (pay-as-you-go)
+  if (snap.usage?.cost?.used !== undefined) return money(snap.usage.cost.used, snap.usage.cost.currency)
+  return monitorLabel(snap)
 }
 
 export function monitorName(snap: MonitorSnapshot, name: keyof NonNullable<MonitorSnapshot["usage"]>) {

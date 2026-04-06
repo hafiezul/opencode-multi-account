@@ -3,11 +3,13 @@ import { Database, and, desc, gte, sql } from "@/storage/db"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
+import { Log } from "@/util/log"
 import os from "node:os"
 import path from "node:path"
 import z from "zod"
 
 export namespace Monitor {
+  const log = Log.create({ service: "monitor" })
   export const TTL = 5 * 60 * 1000
   const DAY = 24 * 60 * 60 * 1000
   const cache = new Map<string, Snapshot>()
@@ -126,13 +128,22 @@ export namespace Monitor {
     reset_at: z.number().nullable().optional(),
   })
 
+  const OpenAIRateLimitValue = z.union([OpenAIWindow, z.boolean(), z.null()])
+
+  const OpenAIAdditionalRateLimit = z.object({
+    limit_name: z.string().nullable().optional(),
+    metered_feature: z.string().nullable().optional(),
+    rate_limit: OpenAIWindow.nullable().optional(),
+  })
+
   const OpenAICredits = z.object({
     balance: z.string().nullable().optional(),
   })
 
   const OpenAIOauth = z.object({
     plan_type: z.string().nullable().optional(),
-    rate_limit: z.record(z.string(), OpenAIWindow),
+    rate_limit: z.record(z.string(), OpenAIRateLimitValue),
+    additional_rate_limits: z.array(OpenAIAdditionalRateLimit).nullable().optional(),
     credits: OpenAICredits.nullable().optional(),
   })
 
@@ -481,8 +492,12 @@ export namespace Monitor {
     note?: string
   }
 
-  function window(data: Record<string, z.infer<typeof OpenAIWindow>>) {
-    const named = Object.entries(data)
+  function window(data: Record<string, z.infer<typeof OpenAIRateLimitValue>>) {
+    const named = Object.entries(data).flatMap(([key, value]) => {
+      const parsed = OpenAIWindow.safeParse(value)
+      if (!parsed.success) return []
+      return [[key, parsed.data] as const]
+    })
     if (named.length === 0) return
     const timed = named
       .filter(([, item]) => item.limit_window_seconds && item.limit_window_seconds > 0)
@@ -498,11 +513,14 @@ export namespace Monitor {
         alt: timed.length > 1 ? timed[timed.length - 1] : undefined,
       }
     }
-    if (data.primary_window) {
+    if ("primary_window" in data) {
+      const primary = OpenAIWindow.safeParse(data.primary_window)
+      const secondary = "secondary_window" in data ? OpenAIWindow.safeParse(data.secondary_window) : undefined
+      if (!primary.success) return
       return {
         key: "primary_window",
-        data: data.primary_window,
-        alt: data.secondary_window ? (["secondary_window", data.secondary_window] as const) : undefined,
+        data: primary.data,
+        alt: secondary?.success ? (["secondary_window", secondary.data] as const) : undefined,
       }
     }
     const sorted = named.toSorted((a, b) => a[0].localeCompare(b[0]))
@@ -638,15 +656,29 @@ export namespace Monitor {
   }
 
   function copilotUsage(data: z.infer<typeof Copilot>) {
+    const premium = data.quota_snapshots?.premium_interactions
+    if (premium) {
+      const limit = scalar(premium.entitlement) ?? 0
+      const left = scalar(premium.remaining) ?? 0
+      if (limit > 0) {
+        return {
+          limit,
+          used: Math.max(0, limit - left),
+          reset_at:
+            parseReset(data.quota_reset_date_utc) ??
+            parseReset(data.quota_reset_date) ??
+            parseReset(data.limited_user_reset_date),
+          plan: data.copilot_plan ?? data.plan,
+          account: string(data.user_id) ?? (data.id !== undefined ? String(data.id) : undefined),
+        }
+      }
+    }
+
     let limit = 0
     let left = 0
     if (data.quota_snapshots) {
       for (const item of Object.values(data.quota_snapshots)) {
-        if (item.unlimited) {
-          limit = 2_147_483_647
-          left = limit
-          break
-        }
+        if (item.unlimited) continue
         limit += scalar(item.entitlement) ?? 0
         left += scalar(item.remaining) ?? 0
       }
@@ -698,6 +730,7 @@ export namespace Monitor {
 
     const parsed = OpenAIOauth.safeParse(await res.json().catch(() => undefined))
     if (!parsed.success) {
+      log.warn("openai oauth schema mismatch", { url: input.url, error: parsed.error.message })
       return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
     }
 
@@ -705,6 +738,14 @@ export namespace Monitor {
     if (!picked) {
       return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
     }
+
+    const extras = (parsed.data.additional_rate_limits ?? [])
+      .flatMap((item) => {
+        if (!item.rate_limit) return []
+        const name = item.limit_name ?? item.metered_feature ?? "additional quota"
+        return [`${name}: ${pct(item.rate_limit.used_percent)}% used.`]
+      })
+      .filter((item, idx, list) => list.indexOf(item) === idx)
 
     return {
       row: {
@@ -721,13 +762,17 @@ export namespace Monitor {
           },
         },
         reset_at: reset(input.now, picked.data),
-        message: "Live OpenAI quota data.",
+        message: "Live OpenAI quota data via subscription-tier usage.",
         notes: uniq(
-          ["OpenAI live quota data is account-wide and may include other models or variants on this profile."],
+          [
+            "Method: subscription quota.",
+            "OpenAI live quota data is account-wide and may include other models or variants on this profile.",
+          ],
           parsed.data.plan_type ? [`Plan: ${parsed.data.plan_type}.`] : undefined,
           picked.alt
             ? [`${label(picked.alt[1].limit_window_seconds)}: ${pct(picked.alt[1].used_percent)}% used.`]
             : undefined,
+          extras,
           parsed.data.credits?.balance ? [`Credits balance: ${parsed.data.credits.balance}.`] : undefined,
         ),
       },
@@ -759,6 +804,7 @@ export namespace Monitor {
     }
     const parsed = Copilot.safeParse(await res.json().catch(() => undefined))
     if (!parsed.success) {
+      log.warn("copilot schema mismatch", { error: parsed.error.message })
       return { note: "Live GitHub Copilot monitor returned an unexpected response, showing a local fallback." }
     }
 
@@ -783,8 +829,9 @@ export namespace Monitor {
           },
         },
         reset_at: usage.reset_at,
-        message: "Live GitHub Copilot quota data.",
+        message: "Live GitHub Copilot premium request quota data.",
         notes: uniq(
+          ["Method: subscription premium request quota."],
           usage.plan ? [`Plan: ${usage.plan}.`] : undefined,
           input.source ? [`Using local Copilot token data from ${input.source}.`] : undefined,
         ),
@@ -860,6 +907,7 @@ export namespace Monitor {
     })
 
     if (list.length === 0) {
+      log.info("monitor fallback has no history", { provider: scope.provider, profile: scope.profile, note })
       return {
         scope,
         state: "unknown",
@@ -935,6 +983,7 @@ export namespace Monitor {
 
     const parsed = OpenRouter.safeParse(await res.json().catch(() => undefined))
     if (!parsed.success) {
+      log.warn("openrouter schema mismatch", { error: parsed.error.message })
       return { note: "Live OpenRouter monitor returned an unexpected response, showing a local fallback." }
     }
 
@@ -1026,6 +1075,7 @@ export namespace Monitor {
 
       const parsed = OpenAICost.safeParse(await res.json().catch(() => undefined))
       if (!parsed.success || parsed.data.data.length === 0) {
+        if (!parsed.success) log.warn("openai cost schema mismatch", { error: parsed.error.message })
         return { note: "Live OpenAI monitor returned an unexpected response, showing a local fallback." }
       }
 
@@ -1050,8 +1100,9 @@ export namespace Monitor {
               currency: item.results[0]?.amount.currency?.toUpperCase() ?? "USD",
             },
           },
-          message: "Live OpenAI organization cost data. No budget limit was returned.",
+          message: "Live OpenAI organization cost data via API billing. No budget limit was returned.",
           notes: [
+            "Method: API billing.",
             "OpenAI organization cost data is org-wide and may include other models, projects, or API keys on this profile.",
           ],
         },
@@ -1082,10 +1133,12 @@ export namespace Monitor {
           },
           body,
         })
-      } catch {
+      } catch (err) {
+        log.warn("openai oauth refresh network error", { error: String(err) })
         return { note: "Live OpenAI monitor could not refresh the OAuth token, showing a local fallback." }
       }
       if (!refresh.ok) {
+        log.warn("openai oauth refresh failed", { status: refresh.status })
         return { note: "Live OpenAI monitor could not refresh the OAuth token, showing a local fallback." }
       }
       const next = z
@@ -1184,10 +1237,12 @@ export namespace Monitor {
               refresh_token: auth.refresh,
             }),
           })
-        } catch {
+        } catch (err) {
+          log.warn("anthropic oauth refresh network error", { error: String(err) })
           return { note: "Live Anthropic monitor could not refresh the OAuth token, showing a local fallback." }
         }
         if (!refresh.ok) {
+          log.warn("anthropic oauth refresh failed", { status: refresh.status })
           return { note: "Live Anthropic monitor could not refresh the OAuth token, showing a local fallback." }
         }
         const next = z
@@ -1228,6 +1283,7 @@ export namespace Monitor {
       }
       const parsed = AnthropicOauth.safeParse(await res.json().catch(() => undefined))
       if (!parsed.success) {
+        log.warn("anthropic oauth schema mismatch", { error: parsed.error.message })
         return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
       }
 
@@ -1238,6 +1294,7 @@ export namespace Monitor {
       }
 
       const notes = [
+        "Method: subscription quota.",
         "Anthropic live quota data is account-wide and may include other models or variants on this profile.",
         parsed.data.five_hour ? `5h quota: ${pct(parsed.data.five_hour.utilization)}% used.` : undefined,
         parsed.data.seven_day ? `7d quota: ${pct(parsed.data.seven_day.utilization)}% used.` : undefined,
@@ -1273,7 +1330,7 @@ export namespace Monitor {
             },
           },
           reset_at: parseReset(item.resets_at),
-          message: "Live Anthropic quota data.",
+          message: "Live Anthropic quota data via subscription usage.",
           notes: notes.length > 0 ? notes : undefined,
         },
       }
@@ -1306,6 +1363,7 @@ export namespace Monitor {
 
     const parsed = AnthropicCost.safeParse(await res.json().catch(() => undefined))
     if (!parsed.success || parsed.data.data.length === 0) {
+      if (!parsed.success) log.warn("anthropic cost schema mismatch", { error: parsed.error.message })
       return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
     }
 
@@ -1330,8 +1388,9 @@ export namespace Monitor {
             currency: item.results[0]?.currency?.toUpperCase() ?? "USD",
           },
         },
-        message: "Live Anthropic organization cost data. No budget limit was returned.",
+        message: "Live Anthropic organization cost data via API billing. No budget limit was returned.",
         notes: [
+          "Method: API billing.",
           "Anthropic organization cost data is org-wide and may include other models, workspaces, or API keys on this profile.",
         ],
       },
@@ -1415,6 +1474,7 @@ export namespace Monitor {
     }
     const parsed = GoogleQuota.safeParse(await res.json().catch(() => undefined))
     if (!parsed.success || !parsed.data.buckets?.length) {
+      if (!parsed.success) log.warn("google quota schema mismatch", { error: parsed.error.message })
       return { note: "Live Gemini monitor returned an unexpected response, showing a local fallback." }
     }
 
@@ -1534,8 +1594,26 @@ export namespace Monitor {
   async function live(scope: Scope, now: number): Promise<LiveResult> {
     for (const item of adapters) {
       const result = await item(scope, now)
-      if (result.snap || result.note) return result
+      if (result.snap) {
+        log.info("monitor live adapter matched", {
+          provider: scope.provider,
+          profile: scope.profile,
+          state: result.snap.state,
+          adapter: item.name,
+        })
+        return result
+      }
+      if (result.note) {
+        log.warn("monitor live adapter failed", {
+          provider: scope.provider,
+          profile: scope.profile,
+          note: result.note,
+          adapter: item.name,
+        })
+        return result
+      }
     }
+    log.info("no monitor adapter matched", { provider: scope.provider, profile: scope.profile })
     return {}
   }
 
@@ -1543,6 +1621,11 @@ export namespace Monitor {
     const now = Date.now()
     const result = await live(scope, now)
     if (result.snap) return result.snap
+    log.info("monitor falling back to history", {
+      provider: scope.provider,
+      profile: scope.profile,
+      note: result.note,
+    })
     return fallback(scope, now, result.note)
   }
 
