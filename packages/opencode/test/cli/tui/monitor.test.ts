@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { monitorHint, monitorLabel, monitorName, monitorSummary } from "../../../src/cli/cmd/tui/util/monitor"
+import {
+  monitorHint,
+  monitorLabel,
+  monitorName,
+  monitorReset,
+  monitorSummary,
+} from "../../../src/cli/cmd/tui/util/monitor"
 
 describe("monitor tui formatting", () => {
   test("prefers a percent hint when a limit exists", () => {
@@ -17,7 +23,7 @@ describe("monitor tui formatting", () => {
     ).toBe("20%")
   })
 
-  test("falls back to the state label when no limit exists", () => {
+  test("shows current spend when no cost limit exists", () => {
     expect(
       monitorHint({
         state: "estimated",
@@ -29,9 +35,21 @@ describe("monitor tui formatting", () => {
           cost: { used: 2, currency: "USD" },
         },
       }),
-    ).toBe("est")
+    ).toBe("$2.0000")
+  })
+
+  test("falls back to the state label when no usage hint exists", () => {
     expect(
       monitorLabel({
+        state: "estimated",
+        source: "history",
+        scope: { provider: "openrouter", model: "openai/gpt-4o" },
+        fetched_at: 1,
+        expires_at: 2,
+      }),
+    ).toBe("est")
+    expect(
+      monitorHint({
         state: "estimated",
         source: "history",
         scope: { provider: "openrouter", model: "openai/gpt-4o" },
@@ -114,6 +132,12 @@ describe("monitor tui formatting", () => {
 
   test("keeps used-only summaries when no limit exists", () => {
     expect(monitorSummary("tokens", { used: 1_234 })).toBe("tokens 1,234")
+  })
+
+  test("formats reset countdowns from reset timestamps", () => {
+    expect(monitorReset(61_000, 0)).toBe("resets in 1m 1s")
+    expect(monitorReset(0, 0)).toBeUndefined()
+    expect(monitorReset(500, 1_000)).toBe("resetting now")
   })
 
   test("allows additive account snapshots on monitor payloads", () => {

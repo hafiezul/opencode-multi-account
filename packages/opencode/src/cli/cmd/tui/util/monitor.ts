@@ -1,4 +1,5 @@
 import type { MonitorSnapshot } from "@opencode-ai/sdk/v2"
+import { formatDuration } from "@/util/format"
 
 type Item = {
   used?: number
@@ -73,4 +74,12 @@ export function monitorSummary(name: string, item?: Item | Cost) {
   if (item.limit === undefined) return `${name} ${used}`
   const left = item.limit - item.used
   return `${name} ${used} / ${full(name, item)} · ${full(name, { ...item, limit: Math.max(left, 0) })} remaining · ${pct(item)}% used`
+}
+
+export function monitorReset(resetAt?: number, now = Date.now()) {
+  if (!resetAt) return
+  const secs = Math.max(0, Math.round((resetAt - now) / 1000))
+  const text = formatDuration(secs)
+  if (text) return `resets in ${text}`
+  return "resetting now"
 }

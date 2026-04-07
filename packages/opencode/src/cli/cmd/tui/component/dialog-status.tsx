@@ -5,9 +5,9 @@ import { useDialog } from "@tui/ui/dialog"
 import { useSync } from "@tui/context/sync"
 import { useLocal } from "@tui/context/local"
 import { useKeyboard } from "@opentui/solid"
-import { For, Match, Switch, Show, createMemo } from "solid-js"
+import { For, Match, Switch, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Locale } from "@/util/locale"
-import { monitorName, monitorSummary } from "../util/monitor"
+import { monitorName, monitorReset, monitorSummary } from "../util/monitor"
 
 export type DialogStatusProps = {}
 
@@ -78,6 +78,7 @@ export function DialogStatus() {
     if (snap.state === "estimated") return theme.warning
     return theme.textMuted
   })
+  const [now, setNow] = createSignal(Date.now())
 
   const refresh = async () => {
     const next = scope()
@@ -89,6 +90,11 @@ export function DialogStatus() {
     if (evt.name === "r" && !evt.ctrl && !evt.meta) {
       void refresh()
     }
+  })
+
+  onMount(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
   })
 
   return (
@@ -148,7 +154,13 @@ export function DialogStatus() {
                 </text>
                 <text fg={theme.textMuted}>last refresh {ago(snap().fetched_at)}</text>
                 <Show when={snap().window}>
-                  <text fg={theme.textMuted}>window {snap().window!.label}</text>
+                  <text fg={theme.textMuted}>
+                    window {snap().window!.label}
+                    <Show when={monitorReset(snap().reset_at, now())}>{(item) => <span> · {item()}</span>}</Show>
+                  </text>
+                </Show>
+                <Show when={!snap().window && monitorReset(snap().reset_at, now())}>
+                  {(item) => <text fg={theme.textMuted}>{item()}</text>}
                 </Show>
                 <Show when={monitorSummary(monitorName(snap(), "requests"), snap().usage?.requests)}>
                   {(item) => <text fg={theme.text}>{item()}</text>}
@@ -194,7 +206,15 @@ export function DialogStatus() {
                             </span>
                           </text>
                           <Show when={item.window}>
-                            <text fg={theme.textMuted}>window {item.window!.label}</text>
+                            <text fg={theme.textMuted}>
+                              window {item.window!.label}
+                              <Show when={monitorReset(item.reset_at, now())}>
+                                {(note) => <span> · {note()}</span>}
+                              </Show>
+                            </text>
+                          </Show>
+                          <Show when={!item.window && monitorReset(item.reset_at, now())}>
+                            {(note) => <text fg={theme.textMuted}>{note()}</text>}
                           </Show>
                           <Show when={monitorSummary(monitorName(snap(), "requests"), item.usage?.requests)}>
                             {(line) => <text fg={theme.text}>{line()}</text>}
