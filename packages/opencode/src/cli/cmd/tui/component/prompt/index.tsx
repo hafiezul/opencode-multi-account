@@ -112,6 +112,29 @@ export function Prompt(props: PromptProps) {
 
   const textareaKeybindings = useTextareaKeybindings()
 
+  const interrupt = () => {
+    if (autocomplete.visible) return
+    if (!input.focused) return
+    if (store.mode === "shell") {
+      setStore("mode", "normal")
+      return
+    }
+    if (!props.sessionID) return
+
+    setStore("interrupt", store.interrupt + 1)
+
+    setTimeout(() => {
+      setStore("interrupt", 0)
+    }, 5000)
+
+    if (store.interrupt >= 2) {
+      sdk.client.session.abort({
+        sessionID: props.sessionID,
+      })
+      setStore("interrupt", 0)
+    }
+  }
+
   const fileStyleId = syntax().getStyleId("extmark.file")!
   const agentStyleId = syntax().getStyleId("extmark.agent")!
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
@@ -260,27 +283,7 @@ export function Prompt(props: PromptProps) {
         hidden: true,
         enabled: status().type !== "idle",
         onSelect: (dialog) => {
-          if (autocomplete.visible) return
-          if (!input.focused) return
-          // TODO: this should be its own command
-          if (store.mode === "shell") {
-            setStore("mode", "normal")
-            return
-          }
-          if (!props.sessionID) return
-
-          setStore("interrupt", store.interrupt + 1)
-
-          setTimeout(() => {
-            setStore("interrupt", 0)
-          }, 5000)
-
-          if (store.interrupt >= 2) {
-            sdk.client.session.abort({
-              sessionID: props.sessionID,
-            })
-            setStore("interrupt", 0)
-          }
+          interrupt()
           dialog.clear()
         },
       },
@@ -1002,6 +1005,12 @@ export function Prompt(props: PromptProps) {
                   }
                 }
                 if (store.mode === "normal") autocomplete.onKeyDown(e)
+                if (e.defaultPrevented) return
+                if (!autocomplete.visible && keybind.match("session_interrupt", e) && status().type !== "idle") {
+                  interrupt()
+                  e.preventDefault()
+                  return
+                }
                 if (!autocomplete.visible) {
                   if (
                     (keybind.match("history_previous", e) && input.cursorOffset === 0) ||
