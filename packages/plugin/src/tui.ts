@@ -8,7 +8,7 @@ import type {
   Todo,
   Message,
   Part,
-  Provider,
+  ProviderListResponse,
   PermissionRequest,
   QuestionRequest,
   SessionStatus,
@@ -261,10 +261,12 @@ export type TuiKV = {
   readonly ready: boolean
 }
 
+export type TuiProvider = ProviderListResponse["all"][number]
+
 export type TuiState = {
   readonly ready: boolean
   readonly config: SdkConfig
-  readonly provider: ReadonlyArray<Provider>
+  readonly provider: ReadonlyArray<TuiProvider>
   readonly path: {
     state: string
     config: string
