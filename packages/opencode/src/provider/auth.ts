@@ -114,7 +114,7 @@ export namespace ProviderAuth {
 
   interface State {
     hooks: Record<ProviderID, Hook>
-    pending: Map<PendingKey, AuthOuathResult>
+    pending: Map<PendingKey, AuthOAuthResult>
   }
 
   const key = (providerID: ProviderID, profile: string | undefined, method: number) =>
@@ -137,10 +137,10 @@ export namespace ProviderAuth {
                   ? Result.succeed([ProviderID.make(x.auth.provider), x.auth] as const)
                   : Result.failVoid,
               ),
-              pending: new Map<PendingKey, AuthOuathResult>(),
-            }
-          }),
-        ),
+            ),
+            pending: new Map<PendingKey, AuthOAuthResult>(),
+          }
+        }),
       )
 
       const methods = Effect.fn("ProviderAuth.methods")(function* () {

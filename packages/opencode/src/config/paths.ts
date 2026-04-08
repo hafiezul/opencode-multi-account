@@ -32,6 +32,15 @@ export namespace ConfigPaths {
   export async function directories(directory: string, worktree: string) {
     return [
       Global.Path.config,
+      ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+        ? await Array.fromAsync(
+            Filesystem.up({
+              targets: [".opencode"],
+              start: directory,
+              stop: worktree,
+            }),
+          )
+        : []),
       ...(await Array.fromAsync(
         Filesystem.up({
           targets: [".opencode"],
@@ -39,23 +48,12 @@ export namespace ConfigPaths {
           stop: Global.Path.home,
         }),
       )),
-      ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
-        ? (
-            await Array.fromAsync(
-              Filesystem.up({
-                targets: [".opencode"],
-                start: directory,
-                stop: worktree,
-              }),
-            )
-          ).toReversed()
-        : []),
       ...(Flag.OPENCODE_CONFIG_DIR ? [Flag.OPENCODE_CONFIG_DIR] : []),
     ]
   }
 
   export function fileInDirectory(dir: string, name: string) {
-    return [path.join(dir, `${name}.json`), path.join(dir, `${name}.jsonc`)]
+    return [path.join(dir, `${name}.jsonc`), path.join(dir, `${name}.json`)]
   }
 
   export const JsonError = NamedError.create(

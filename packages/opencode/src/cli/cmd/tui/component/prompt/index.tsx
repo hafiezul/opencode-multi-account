@@ -1133,33 +1133,40 @@ export function Prompt(props: PromptProps) {
               cursorColor={theme.text}
               syntaxStyle={syntax()}
             />
-            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
-              <text fg={highlight()}>
-                {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
-              </text>
-              <Show when={store.mode === "normal"}>
-                <>
-                  <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
-                      {local.model.parsed().model}
-                    </text>
-                    <text fg={theme.textMuted}>{local.model.parsed().provider}</text>
-                    <Show when={showVariant()}>
-                      <text fg={theme.textMuted}>·</text>
-                      <text>
-                        <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
+            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
+              <box flexDirection="row" gap={1}>
+                <text fg={highlight()}>
+                  {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
+                </text>
+                <Show when={store.mode === "normal"}>
+                  <>
+                    <box flexDirection="row" gap={1}>
+                      <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
+                        {local.model.parsed().model}
                       </text>
+                      <text fg={theme.textMuted}>{currentProviderLabel()}</text>
+                      <Show when={showVariant()}>
+                        <text fg={theme.textMuted}>·</text>
+                        <text>
+                          <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
+                        </text>
+                      </Show>
+                    </box>
+                    <Show when={profile()}>
+                      <text fg={theme.textMuted}>·</text>
+                      <text fg={theme.text}>{profile()}</text>
                     </Show>
-                  </box>
-                  <Show when={profile()}>
-                    <text fg={theme.textMuted}>·</text>
-                    <text fg={theme.text}>{profile()}</text>
-                  </Show>
-                  <Show when={monitorLabel()}>
-                    <text fg={theme.textMuted}>·</text>
-                    <text fg={monitorColor()}>{monitorLabel()}</text>
-                  </Show>
-                </>
+                    <Show when={monitorLabel()}>
+                      <text fg={theme.textMuted}>·</text>
+                      <text fg={monitorColor()}>{monitorLabel()}</text>
+                    </Show>
+                  </>
+                </Show>
+              </box>
+              <Show when={hasRightContent()}>
+                <box flexDirection="row" gap={1} alignItems="center">
+                  {props.right}
+                </box>
               </Show>
             </box>
           </box>

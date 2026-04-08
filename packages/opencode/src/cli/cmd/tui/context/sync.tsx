@@ -457,9 +457,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             ...(sessionListResponse ? [sessionListResponse] : []),
           ]).then((responses) => {
             const providerList = responses[0]
-            const agents = responses[1]
-            const config = responses[2]
-            const sessions = responses[3]
+            const consoleState = responses[1]
+            const agents = responses[2]
+            const config = responses[3]
+            const sessions = responses[4]
             const connected = new Set(providerList.connected)
 
             batch(() => {

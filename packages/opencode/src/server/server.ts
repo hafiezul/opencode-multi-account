@@ -7,16 +7,7 @@ import { cors } from "hono/cors"
 import { basicAuth } from "hono/basic-auth"
 import type { UpgradeWebSocket } from "hono/ws"
 import z from "zod"
-import { Provider } from "../provider/provider"
-import { NamedError } from "@opencode-ai/util/error"
-import { LSP } from "../lsp"
-import { Format } from "../format"
-import { TuiRoutes } from "./routes/tui"
-import { Instance } from "../project/instance"
-import { Vcs } from "../project/vcs"
-import { Agent } from "../agent/agent"
-import { Skill } from "../skill"
-import { Auth, normalizeProfile } from "../auth"
+import { Auth } from "../auth"
 import { Flag } from "../flag/flag"
 import { ProviderID } from "../provider/schema"
 import { WorkspaceRouterMiddleware } from "./router"
@@ -55,34 +46,7 @@ export namespace Server {
 
   export function ControlPlaneRoutes(upgrade: UpgradeWebSocket, app = new Hono(), opts?: { cors?: string[] }): Hono {
     return app
-      .onError((err, c) => {
-        log.error("failed", {
-          error: err,
-        })
-        if (err instanceof NamedError) {
-          let status: ContentfulStatusCode
-          if (err instanceof NotFoundError) status = 404
-          else if (err instanceof Provider.ModelNotFoundError) status = 400
-          else if (err.name === "ProviderAuthValidationFailed") status = 400
-          else if (err.name.startsWith("Worktree")) status = 400
-          else status = 500
-          return c.json(err.toObject(), { status })
-        }
-        if (err instanceof Error && err.name === "AuthError") {
-          return c.json(
-            {
-              name: err.name,
-              message: err.message,
-            },
-            { status: 400 },
-          )
-        }
-        if (err instanceof HTTPException) return err.getResponse()
-        const message = err instanceof Error && err.stack ? err.stack : err.toString()
-        return c.json(new NamedError.Unknown({ message }).toObject(), {
-          status: 500,
-        })
-      })
+      .onError(errorHandler(log))
       .use((c, next) => {
         // Allow CORS preflight requests to succeed without auth.
         // Browser clients sending Authorization headers will preflight with OPTIONS.
@@ -159,27 +123,11 @@ export namespace Server {
             providerID: ProviderID.zod,
           }),
         ),
-        validator(
-          "json",
-          z
-            .object({
-              profile: z.string().optional(),
-              auth: Auth.Info.zod.optional(),
-            })
-            .passthrough(),
-        ),
+        validator("json", Auth.Info.zod),
         async (c) => {
           const providerID = c.req.valid("param").providerID
-          const body = c.req.valid("json")
-          const profile = body.profile
-          const auth = body.auth ?? Auth.Info.zod.parse(body)
-          const name = normalizeProfile(profile)
-          if (!name) {
-            await Auth.set(providerID, auth)
-            return c.json(true)
-          }
-          await Auth.put(providerID, name, auth)
-          await Auth.activate(providerID, name)
+          const info = c.req.valid("json")
+          await Auth.set(providerID, info)
           return c.json(true)
         },
       )

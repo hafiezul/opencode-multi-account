@@ -118,16 +118,14 @@ export namespace Auth {
       }
 
       const read = () =>
-        Effect.tryPromise({
-          try: () => Filesystem.readJson<Record<string, unknown>>(file).catch((): Record<string, unknown> => ({})),
-          catch: fail("Failed to read auth data"),
-        })
+        fsys.readJson(file).pipe(
+          Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+          Effect.map((data) => data as Record<string, unknown>),
+          Effect.mapError(fail("Failed to read auth data")),
+        )
 
       const write = (data: Record<string, unknown>) =>
-        Effect.tryPromise({
-          try: () => Filesystem.writeJson(file, data, 0o600),
-          catch: fail("Failed to write auth data"),
-        })
+        fsys.writeJson(file, data, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
 
       const all = Effect.fn("Auth.all")(() =>
         read().pipe(
