@@ -154,7 +154,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const base = query({ provider: "openrouter", profile: "work", model: "openai/gpt-4o" })
 
           const first = (await (await app.request(`/provider/monitor?${base}`)).json()) as {
@@ -210,7 +210,7 @@ describe("provider monitor endpoint", () => {
         globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.1", refresh: true })}`,
@@ -280,7 +280,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
@@ -359,7 +359,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
@@ -421,7 +421,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true, directory: tmp.path })}`,
@@ -479,7 +479,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
@@ -544,7 +544,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
@@ -603,7 +603,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
@@ -672,7 +672,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "chatgpt", model: "gpt-5.3-codex", refresh: true })}`,
@@ -721,7 +721,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openai", profile: "admin", model: "gpt-4.1", refresh: true })}`,
@@ -795,7 +795,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "anthropic", profile: "claude", model: "claude-sonnet-4-5", refresh: true })}`,
@@ -881,7 +881,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "anthropic", profile: "claude", model: "claude-sonnet-4-5", refresh: true })}`,
@@ -937,7 +937,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "anthropic", profile: "org", model: "claude-sonnet-4-5", refresh: true })}`,
@@ -1010,7 +1010,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "google", profile: "work", model: "gemini-3-pro-preview", refresh: true })}`,
@@ -1084,7 +1084,7 @@ describe("provider monitor endpoint", () => {
         ) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "google", profile: "work", model: "gemini-3-pro-preview", refresh: true })}`,
@@ -1155,7 +1155,7 @@ describe("provider monitor endpoint", () => {
           }) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "google", model: "gemini-2.5-flash", refresh: true })}`,
@@ -1212,7 +1212,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "github-copilot", profile: "work", model: "gpt-4.1", refresh: true })}`,
@@ -1276,7 +1276,7 @@ describe("provider monitor endpoint", () => {
         }) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "github-copilot", profile: "work", model: "gpt-4.1", refresh: true })}`,
@@ -1330,7 +1330,7 @@ describe("provider monitor endpoint", () => {
           ) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
@@ -1395,7 +1395,7 @@ describe("provider monitor endpoint", () => {
           }) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
@@ -1487,7 +1487,7 @@ describe("provider monitor endpoint", () => {
           }) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "github-copilot", profile: "work", model: "gpt-4.1", refresh: true })}`,
@@ -1564,7 +1564,7 @@ describe("provider monitor endpoint", () => {
           }) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
@@ -1610,7 +1610,7 @@ describe("provider monitor endpoint", () => {
         globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const scoped = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.1-profile-split", refresh: true })}`,
@@ -1692,7 +1692,7 @@ describe("provider monitor endpoint", () => {
           }) as unknown as typeof fetch
 
           try {
-            const app = Server.Default()
+            const app = Server.Default().app
             const body = (await (
               await app.request(
                 `/provider/monitor?${query({ provider: "github-copilot", model: "gpt-4.1", refresh: true })}`,
@@ -1734,7 +1734,7 @@ describe("provider monitor endpoint", () => {
         globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", model: "openai/gpt-4.1-legacy", refresh: true })}`,
@@ -1796,7 +1796,7 @@ describe("provider monitor endpoint", () => {
         globalThis.fetch = mock(async () => new Response("busy", { status: 503 })) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.1-account-split", refresh: true })}`,
@@ -1837,7 +1837,7 @@ describe("provider monitor endpoint", () => {
         ) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.2", refresh: true })}`,
@@ -1878,7 +1878,7 @@ describe("provider monitor endpoint", () => {
         ) as unknown as typeof fetch
 
         try {
-          const app = Server.Default()
+          const app = Server.Default().app
           const body = (await (
             await app.request(
               `/provider/monitor?${query({ provider: "openrouter", profile: "work", model: "openai/gpt-4.3", refresh: true })}`,

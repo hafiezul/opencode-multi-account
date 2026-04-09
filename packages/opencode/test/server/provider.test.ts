@@ -15,7 +15,7 @@ const targetID = "server-switch-target"
 Log.init({ print: false })
 
 function call(app: ReturnType<typeof Server.Default>, dir: string, url: string, init?: RequestInit) {
-  return app.request(url, {
+  return app.app.request(url, {
     ...init,
     headers: {
       ...init?.headers,

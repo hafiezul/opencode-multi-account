@@ -26,6 +26,17 @@ export namespace LLM {
   const log = Log.create({ service: "llm" })
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
+  type WorkflowTool = {
+    name: string
+    args: string
+  }
+
+  type WorkflowExtra = {
+    sessionID: string
+    sessionPreapprovedTools: string[]
+    approvalHandler: (tools: WorkflowTool[]) => Promise<{ approved: boolean }>
+  }
+
   export type StreamInput = {
     user: MessageV2.User
     sessionID: string
@@ -234,7 +245,7 @@ export namespace LLM {
     // from the workflow service are executed via opencode's tool system
     // and results sent back over the WebSocket.
     if (language instanceof GitLabWorkflowLanguageModel) {
-      const workflowModel = language
+      const workflowModel = language as GitLabWorkflowLanguageModel & WorkflowExtra
       workflowModel.sessionID = input.sessionID
       workflowModel.systemPrompt = system.join("\n")
       workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
@@ -266,8 +277,8 @@ export namespace LLM {
       })
 
       const approvedToolsForSession = new Set<string>()
-      workflowModel.approvalHandler = Instance.bind(async (approvalTools) => {
-        const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
+      workflowModel.approvalHandler = Instance.bind(async (approvalTools: WorkflowTool[]) => {
+        const uniqueNames = [...new Set(approvalTools.map((t) => t.name))] as string[]
         // Auto-approve tools that were already approved in this session
         // (prevents infinite approval loops for server-side MCP tools)
         if (uniqueNames.every((name) => approvedToolsForSession.has(name))) {
@@ -281,7 +292,7 @@ export namespace LLM {
           unsub = Bus.subscribe(Permission.Event.Replied, (evt) => {
             if (evt.properties.requestID === id) reply = evt.properties.reply
           })
-          const toolPatterns = approvalTools.map((t: { name: string; args: string }) => {
+          const toolPatterns = approvalTools.map((t) => {
             try {
               const parsed = JSON.parse(t.args) as Record<string, unknown>
               const title = (parsed?.title ?? parsed?.name ?? "") as string
