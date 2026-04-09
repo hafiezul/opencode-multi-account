@@ -120,6 +120,18 @@ test("loads tui config with the same precedence order as server config paths", a
   })
 })
 
+test("includes the provider profile delete keybind by default", async () => {
+  await using tmp = await tmpdir()
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await TuiConfig.get()
+      expect(config.keybinds?.provider_profile_delete).toBe("ctrl+d")
+    },
+  })
+})
+
 test("migrates tui-specific keys from opencode.json when tui.json does not exist", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
