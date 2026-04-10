@@ -39,6 +39,27 @@
   <a href="README.vi.md">Tiếng Việt</a>
 </p>
 
+> [!IMPORTANT]
+> **This fork adds extra provider-profile and monitoring features on top of upstream OpenCode.**
+>
+> Differences from upstream in this fork:
+>
+> - Multi-profile provider management: create, switch, normalize, and remove provider profiles, with the active profile shown in the TUI.
+> - Better auth flows: `opencode providers login [url]` supports provider URLs with well-known auth discovery in addition to the usual login flow.
+> - Richer provider monitoring: the Status view includes usage snapshots, account attribution, limit tracking, reset countdowns, OpenRouter live data, and expandable detailed account/snapshot views.
+> - TUI quality-of-life improvements: prompt interrupt handling and in-app profile deletion with a dedicated keybind.
+>
+> Commands and usage for fork-only features:
+>
+> - Manage profiles with `opencode providers list`, `opencode providers status`, `opencode providers login [url] --profile <name>`, `opencode providers switch --provider <provider> --profile <name>`, and `opencode providers logout --provider <provider> --profile <name>`.
+> - In the TUI, open Status with the default keybind `<leader>s`, press `r` to refresh monitor data, and press `d` to toggle detailed monitor/account views.
+> - In the provider profile dialog, press `ctrl+d` twice to delete a profile. The keybind is configurable with `provider_profile_delete`.
+>
+> Setup notes:
+>
+> - Multi-profile management works once you log into the same provider with different `--profile` names.
+> - Some live monitor integrations need provider credentials beyond local history, such as OpenAI OAuth, local Gemini credentials, GitHub Copilot auth, or provider API keys. When live data is unavailable, this fork falls back to local usage history.
+
 [![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
 
 ---
