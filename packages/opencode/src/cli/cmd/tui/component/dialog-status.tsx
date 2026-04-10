@@ -8,8 +8,39 @@ import { useKeyboard } from "@opentui/solid"
 import { For, Match, Switch, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Locale } from "@/util/locale"
 import { monitorName, monitorReset, monitorSummary } from "../util/monitor"
+import type { MonitorAccountSnapshot, MonitorSnapshot } from "@opencode-ai/sdk/v2"
 
 export type DialogStatusProps = {}
+
+function monitorLines(snap: MonitorSnapshot) {
+  return [
+    monitorSummary(monitorName(snap, "requests"), snap.usage?.requests),
+    monitorSummary("tokens", snap.usage?.tokens),
+    monitorSummary("cost", snap.usage?.cost),
+  ].filter((item): item is string => !!item)
+}
+
+function monitorFacts(snap: Pick<MonitorSnapshot, "fetched_at" | "window" | "reset_at">, now: number) {
+  return [
+    `refresh ${ago(snap.fetched_at)}`,
+    snap.window ? `window ${snap.window.label}` : undefined,
+    monitorReset(snap.reset_at, now),
+  ].filter((item): item is string => !!item)
+}
+
+function accountFacts(item: MonitorAccountSnapshot, now: number) {
+  return [item.window ? `window ${item.window.label}` : undefined, monitorReset(item.reset_at, now)].filter(
+    (note): note is string => !!note,
+  )
+}
+
+function accountLines(item: MonitorAccountSnapshot) {
+  return [
+    monitorSummary("requests", item.usage?.requests),
+    monitorSummary("tokens", item.usage?.tokens),
+    monitorSummary("cost", item.usage?.cost),
+  ].filter((line): line is string => !!line)
+}
 
 function ago(time?: number) {
   if (!time) return "—"
@@ -28,6 +59,7 @@ export function DialogStatus() {
   const local = useLocal()
   const { theme } = useTheme()
   const dialog = useDialog()
+  const [details, setDetails] = createSignal(false)
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
 
@@ -90,9 +122,13 @@ export function DialogStatus() {
     if (evt.name === "r" && !evt.ctrl && !evt.meta) {
       void refresh()
     }
+    if (evt.name === "d" && !evt.ctrl && !evt.meta) {
+      setDetails((item) => !item)
+    }
   })
 
   onMount(() => {
+    dialog.setSize("large")
     const timer = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => clearInterval(timer))
   })
@@ -133,113 +169,102 @@ export function DialogStatus() {
         <box>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme.text}>Monitor</text>
-            <text
-              fg={sync.monitor.pending(scope()!) ? theme.warning : theme.textMuted}
-              onMouseUp={() => void refresh()}
-            >
-              {sync.monitor.pending(scope()!) ? "refreshing..." : "r refresh"}
-            </text>
+            <box flexDirection="row" gap={2}>
+              <Show
+                when={
+                  monitor() &&
+                  (monitor()!.message ? 1 : 0) + (monitor()!.notes?.length ?? 0) + (monitor()!.accounts?.length ?? 0) >
+                    0
+                }
+              >
+                <text fg={details() ? theme.text : theme.textMuted} onMouseUp={() => setDetails((item) => !item)}>
+                  {details() ? "d less" : "d details"}
+                </text>
+              </Show>
+              <text
+                fg={sync.monitor.pending(scope()!) ? theme.warning : theme.textMuted}
+                onMouseUp={() => void refresh()}
+              >
+                {sync.monitor.pending(scope()!) ? "refreshing..." : "r refresh"}
+              </text>
+            </box>
           </box>
           <Show when={monitor()} fallback={<text fg={theme.textMuted}>Loading monitor snapshot...</text>}>
             {(snap) => (
               <box flexDirection="column">
                 <text fg={theme.text}>
-                  state <span style={{ fg: monitorColor(), bold: true }}>{snap().state}</span>
+                  <span style={{ fg: monitorColor(), bold: true }}>{snap().state}</span>
                   <span style={{ fg: theme.textMuted }}> · {snap().source}</span>
                 </text>
+                <Show when={monitorLines(snap())[0]}>{(item) => <text fg={theme.text}>{item()}</text>}</Show>
                 <text fg={theme.textMuted} wrapMode="word">
-                  {snap().scope.provider}/{snap().scope.model}
-                  {snap().scope.variant ? ` · ${snap().scope.variant}` : ""}
-                  {snap().scope.profile ? ` · ${snap().scope.profile}` : ""}
+                  {monitorFacts(snap(), now()).join(" · ")}
                 </text>
-                <text fg={theme.textMuted}>last refresh {ago(snap().fetched_at)}</text>
-                <Show when={snap().window}>
-                  <text fg={theme.textMuted}>
-                    window {snap().window!.label}
-                    <Show when={monitorReset(snap().reset_at, now())}>{(item) => <span> · {item()}</span>}</Show>
-                  </text>
-                </Show>
-                <Show when={!snap().window && monitorReset(snap().reset_at, now())}>
-                  {(item) => <text fg={theme.textMuted}>{item()}</text>}
-                </Show>
-                <Show when={monitorSummary(monitorName(snap(), "requests"), snap().usage?.requests)}>
-                  {(item) => <text fg={theme.text}>{item()}</text>}
-                </Show>
-                <Show when={monitorSummary("tokens", snap().usage?.tokens)}>
-                  {(item) => <text fg={theme.text}>{item()}</text>}
-                </Show>
-                <Show when={monitorSummary("cost", snap().usage?.cost)}>
-                  {(item) => <text fg={theme.text}>{item()}</text>}
-                </Show>
-                <Show when={snap().message}>
-                  <text fg={theme.textMuted} wrapMode="word">
-                    {snap().message}
-                  </text>
-                </Show>
-                <For each={snap().notes ?? []}>
-                  {(item) => (
-                    <text fg={theme.textMuted} wrapMode="word">
-                      • {item}
-                    </text>
-                  )}
-                </For>
-                <Show when={(snap().accounts?.length ?? 0) > 0}>
+                <Show when={details()}>
                   <box flexDirection="column" marginTop={1}>
-                    <text fg={theme.text}>accounts {snap().accounts!.length}</text>
-                    <For each={snap().accounts ?? []}>
+                    <text fg={theme.textMuted} wrapMode="word">
+                      {snap().scope.provider}/{snap().scope.model}
+                      {snap().scope.variant ? ` · ${snap().scope.variant}` : ""}
+                      {snap().scope.profile ? ` · ${snap().scope.profile}` : ""}
+                    </text>
+                    <For each={monitorLines(snap()).slice(1)}>{(item) => <text fg={theme.text}>{item}</text>}</For>
+                    <Show when={snap().message}>
+                      <text fg={theme.textMuted} wrapMode="word">
+                        {snap().message}
+                      </text>
+                    </Show>
+                    <For each={snap().notes ?? []}>
                       {(item) => (
-                        <box flexDirection="column" paddingLeft={2}>
-                          <text fg={theme.text}>
-                            {item.label}{" "}
-                            <span
-                              style={{
-                                fg:
-                                  item.state === "live"
-                                    ? theme.success
-                                    : item.state === "estimated"
-                                      ? theme.warning
-                                      : theme.textMuted,
-                                bold: true,
-                              }}
-                            >
-                              {item.state}
-                            </span>
-                          </text>
-                          <Show when={item.window}>
-                            <text fg={theme.textMuted}>
-                              window {item.window!.label}
-                              <Show when={monitorReset(item.reset_at, now())}>
-                                {(note) => <span> · {note()}</span>}
-                              </Show>
-                            </text>
-                          </Show>
-                          <Show when={!item.window && monitorReset(item.reset_at, now())}>
-                            {(note) => <text fg={theme.textMuted}>{note()}</text>}
-                          </Show>
-                          <Show when={monitorSummary(monitorName(snap(), "requests"), item.usage?.requests)}>
-                            {(line) => <text fg={theme.text}>{line()}</text>}
-                          </Show>
-                          <Show when={monitorSummary("tokens", item.usage?.tokens)}>
-                            {(line) => <text fg={theme.text}>{line()}</text>}
-                          </Show>
-                          <Show when={monitorSummary("cost", item.usage?.cost)}>
-                            {(line) => <text fg={theme.text}>{line()}</text>}
-                          </Show>
-                          <Show when={item.message}>
-                            <text fg={theme.textMuted} wrapMode="word">
-                              {item.message}
-                            </text>
-                          </Show>
-                          <For each={item.notes ?? []}>
-                            {(note) => (
-                              <text fg={theme.textMuted} wrapMode="word">
-                                • {note}
-                              </text>
-                            )}
-                          </For>
-                        </box>
+                        <text fg={theme.textMuted} wrapMode="word">
+                          • {item}
+                        </text>
                       )}
                     </For>
+                    <Show when={(snap().accounts?.length ?? 0) > 0}>
+                      <box flexDirection="column" marginTop={1}>
+                        <text fg={theme.text}>accounts {snap().accounts!.length}</text>
+                        <For each={snap().accounts ?? []}>
+                          {(item) => (
+                            <box flexDirection="column" paddingLeft={2}>
+                              <text fg={theme.text}>
+                                {item.label}{" "}
+                                <span
+                                  style={{
+                                    fg:
+                                      item.state === "live"
+                                        ? theme.success
+                                        : item.state === "estimated"
+                                          ? theme.warning
+                                          : theme.textMuted,
+                                    bold: true,
+                                  }}
+                                >
+                                  {item.state}
+                                </span>
+                              </text>
+                              <Show when={accountFacts(item, now()).length > 0}>
+                                <text fg={theme.textMuted} wrapMode="word">
+                                  {accountFacts(item, now()).join(" · ")}
+                                </text>
+                              </Show>
+                              <For each={accountLines(item)}>{(line) => <text fg={theme.text}>{line}</text>}</For>
+                              <Show when={item.message}>
+                                <text fg={theme.textMuted} wrapMode="word">
+                                  {item.message}
+                                </text>
+                              </Show>
+                              <For each={item.notes ?? []}>
+                                {(note) => (
+                                  <text fg={theme.textMuted} wrapMode="word">
+                                    • {note}
+                                  </text>
+                                )}
+                              </For>
+                            </box>
+                          )}
+                        </For>
+                      </box>
+                    </Show>
                   </box>
                 </Show>
               </box>
