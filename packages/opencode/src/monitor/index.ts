@@ -502,9 +502,9 @@ export namespace Monitor {
     const timed = named
       .filter(([, item]) => item.limit_window_seconds && item.limit_window_seconds > 0)
       .sort((a, b) => {
-        const used = pct(b[1].used_percent) - pct(a[1].used_percent)
-        if (used !== 0) return used
-        return (a[1].limit_window_seconds ?? Infinity) - (b[1].limit_window_seconds ?? Infinity)
+        const window = (a[1].limit_window_seconds ?? Infinity) - (b[1].limit_window_seconds ?? Infinity)
+        if (window !== 0) return window
+        return pct(b[1].used_percent) - pct(a[1].used_percent)
       })
     if (timed.length > 0) {
       return {
@@ -603,6 +603,30 @@ export namespace Monitor {
     if (!key) return "Current account"
     if (key === current) return `${key} (current)`
     return key
+  }
+
+  function quota(
+    key: string,
+    label: string,
+    item?: z.infer<typeof AnthropicOauthWindow> | null,
+  ): AccountSnapshot | undefined {
+    if (!item) return
+    return {
+      key,
+      label,
+      state: "live",
+      window: {
+        label,
+      },
+      usage: {
+        requests: {
+          used: pct(item.utilization),
+          limit: 100,
+        },
+      },
+      reset_at: parseReset(item.resets_at),
+      message: "Live Anthropic quota data via subscription usage.",
+    }
   }
 
   function copilotURL(base?: string) {
@@ -1287,9 +1311,13 @@ export namespace Monitor {
         return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
       }
 
-      const item =
-        parsed.data.seven_day ?? parsed.data.seven_day_sonnet ?? parsed.data.seven_day_opus ?? parsed.data.five_hour
-      if (!item) {
+      const five = quota("five_hour", "5h quota", parsed.data.five_hour)
+      const week = quota("seven_day", "7d quota", parsed.data.seven_day)
+      const sonnet = quota("seven_day_sonnet", "7d Sonnet quota", parsed.data.seven_day_sonnet)
+      const opus = quota("seven_day_opus", "7d Opus quota", parsed.data.seven_day_opus)
+      const rows = [five, week, sonnet, opus].filter((item): item is AccountSnapshot => !!item)
+      const row = five ?? week ?? sonnet ?? opus
+      if (!row) {
         return { note: "Live Anthropic monitor returned an unexpected response, showing a local fallback." }
       }
 
@@ -1308,31 +1336,7 @@ export namespace Monitor {
       ].filter((note, idx, list): note is string => !!note && list.indexOf(note) === idx)
 
       return {
-        snap: {
-          scope,
-          state: "live",
-          fetched_at: now,
-          expires_at: now + TTL,
-          source: "provider",
-          window: {
-            label: parsed.data.seven_day
-              ? "7d quota"
-              : parsed.data.seven_day_sonnet
-                ? "7d Sonnet quota"
-                : parsed.data.seven_day_opus
-                  ? "7d Opus quota"
-                  : "5h quota",
-          },
-          usage: {
-            requests: {
-              used: pct(item.utilization),
-              limit: 100,
-            },
-          },
-          reset_at: parseReset(item.resets_at),
-          message: "Live Anthropic quota data via subscription usage.",
-          notes: notes.length > 0 ? notes : undefined,
-        },
+        snap: snap(scope, now, row, rows, notes.length > 0 ? notes : undefined),
       }
     }
 

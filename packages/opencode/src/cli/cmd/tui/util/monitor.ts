@@ -10,6 +10,21 @@ type Cost = Item & {
   currency?: string
 }
 
+type Source = {
+  scope?: MonitorSnapshot["scope"]
+  window?: MonitorSnapshot["window"]
+  message?: string
+  notes?: string[]
+  state?: MonitorSnapshot["state"]
+  source?: MonitorSnapshot["source"]
+  fetched_at?: number
+  expires_at?: number
+  key?: string
+  label?: string
+  reset_at?: number
+  usage?: MonitorSnapshot["usage"]
+}
+
 function pct(item?: Item) {
   if (item?.used === undefined || item.limit === undefined) return
   if (item.limit === 0) return item.used === 0 ? 0 : 100
@@ -25,6 +40,26 @@ function money(value?: number, currency?: string) {
 function num(value?: number) {
   if (value === undefined) return "—"
   return value.toLocaleString()
+}
+
+function text(item: Source) {
+  return [item.window?.label, item.message, ...(item.notes ?? [])]
+    .filter((part): part is string => !!part)
+    .join(" ")
+    .toLowerCase()
+}
+
+function copilot(item: Source) {
+  const id = item.scope?.provider
+  if (id === "github-copilot") return true
+  return text(item).includes("premium request")
+}
+
+function percent(item: Source, name: string, value?: Item | Cost) {
+  if (!value || value.used === undefined || value.limit === undefined) return false
+  if (name === "cost" || name === "tokens") return false
+  if (copilot(item)) return false
+  return value.limit === 100
 }
 
 function fmt(name: string, item?: Item | Cost) {
@@ -47,10 +82,12 @@ export function monitorLabel(snap?: MonitorSnapshot) {
 
 export function monitorHint(snap?: MonitorSnapshot) {
   if (!snap) return
-  const value = pct(snap.usage?.cost) ?? pct(snap.usage?.tokens) ?? pct(snap.usage?.requests)
-  if (value !== undefined) return `${value}%`
-  // Show cost amount when available but no limit (pay-as-you-go)
   if (snap.usage?.cost?.used !== undefined) return money(snap.usage.cost.used, snap.usage.cost.currency)
+  if (percent(snap, "requests", snap.usage?.requests)) return `${pct(snap.usage?.requests)}%`
+  if (snap.usage?.requests?.used !== undefined) return num(snap.usage.requests.used)
+  const value = pct(snap.usage?.tokens)
+  if (value !== undefined) return `${value}%`
+  if (snap.usage?.tokens?.used !== undefined) return num(snap.usage.tokens.used)
   return monitorLabel(snap)
 }
 
@@ -68,18 +105,18 @@ export function monitorName(snap: MonitorSnapshot, name: keyof NonNullable<Monit
   return name
 }
 
-export function monitorSummary(name: string, item?: Item | Cost) {
+export function monitorSummary(source: Source, name: string, item?: Item | Cost) {
   if (!item || item.used === undefined) return
+  if (percent(source, name, item)) return `${name} ${pct(item)}%`
   const used = fmt(name, item)
   if (item.limit === undefined) return `${name} ${used}`
-  const left = item.limit - item.used
-  return `${name} ${used} / ${full(name, item)} · ${full(name, { ...item, limit: Math.max(left, 0) })} remaining · ${pct(item)}% used`
+  return `${name} ${used} / ${full(name, item)}`
 }
 
 export function monitorReset(resetAt?: number, now = Date.now()) {
   if (!resetAt) return
   const secs = Math.max(0, Math.round((resetAt - now) / 1000))
   const text = formatDuration(secs)
-  if (text) return `resets in ${text}`
+  if (text) return `limit will reset in ${text}`
   return "resetting now"
 }

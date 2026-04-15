@@ -14,9 +14,9 @@ export type DialogStatusProps = {}
 
 function monitorLines(snap: MonitorSnapshot) {
   return [
-    monitorSummary(monitorName(snap, "requests"), snap.usage?.requests),
-    monitorSummary("tokens", snap.usage?.tokens),
-    monitorSummary("cost", snap.usage?.cost),
+    monitorSummary(snap, monitorName(snap, "requests"), snap.usage?.requests),
+    monitorSummary(snap, "tokens", snap.usage?.tokens),
+    monitorSummary(snap, "cost", snap.usage?.cost),
   ].filter((item): item is string => !!item)
 }
 
@@ -34,12 +34,70 @@ function accountFacts(item: MonitorAccountSnapshot, now: number) {
   )
 }
 
-function accountLines(item: MonitorAccountSnapshot) {
+function accountLines(snap: MonitorSnapshot, item: MonitorAccountSnapshot) {
   return [
-    monitorSummary("requests", item.usage?.requests),
-    monitorSummary("tokens", item.usage?.tokens),
-    monitorSummary("cost", item.usage?.cost),
+    monitorSummary(item, monitorName(snap, "requests"), item.usage?.requests),
+    monitorSummary(item, "tokens", item.usage?.tokens),
+    monitorSummary(item, "cost", item.usage?.cost),
   ].filter((line): line is string => !!line)
+}
+
+function seconds(label?: string) {
+  const value = label?.toLowerCase() ?? ""
+  const match = value.match(/(\d+)\s*([smhdw])\b/)
+  if (!match) return
+  const count = Number(match[1])
+  const unit = match[2]
+  if (!Number.isFinite(count)) return
+  if (unit === "s") return count
+  if (unit === "m") return count * 60
+  if (unit === "h") return count * 60 * 60
+  if (unit === "d") return count * 24 * 60 * 60
+  if (unit === "w") return count * 7 * 24 * 60 * 60
+}
+
+function rank(label?: string) {
+  const value = label?.toLowerCase() ?? ""
+  const span = seconds(value)
+  if (span !== undefined) return span
+  if (value.includes("hourly")) return 60 * 60
+  if (value.includes("daily")) return 24 * 60 * 60
+  if (value.includes("weekly")) return 7 * 24 * 60 * 60
+  return 2
+}
+
+function important(item: Pick<MonitorSnapshot, "window">) {
+  const value = item.window?.label.toLowerCase() ?? ""
+  return seconds(value) !== undefined || value.includes("hourly") || value.includes("daily") || value.includes("weekly")
+}
+
+function key(item: Pick<MonitorSnapshot, "window">) {
+  return item.window?.label.toLowerCase() ?? ""
+}
+
+function highlight(snap: MonitorSnapshot, now: number) {
+  const list = [snap, ...(snap.accounts ?? [])].filter(important)
+  const seen = new Set<string>()
+  return list
+    .toSorted((a, b) => rank(a.window?.label) - rank(b.window?.label))
+    .filter((item) => {
+      const value = key(item)
+      if (!value || seen.has(value)) return false
+      seen.add(value)
+      return true
+    })
+    .map((item) => {
+      const usage = monitorSummary(item, monitorName(snap, "requests"), item.usage?.requests)
+      const reset = monitorReset(item.reset_at, now)
+      return [item.window?.label, usage, reset].filter((part): part is string => !!part).join(" · ")
+    })
+}
+
+function primary(snap: MonitorSnapshot, now: number) {
+  const line = monitorLines(snap)[0]
+  if (!line) return
+  if (highlight(snap, now).some((item) => item.includes(line))) return
+  return line
 }
 
 function ago(time?: number) {
@@ -196,7 +254,8 @@ export function DialogStatus() {
                   <span style={{ fg: monitorColor(), bold: true }}>{snap().state}</span>
                   <span style={{ fg: theme.textMuted }}> · {snap().source}</span>
                 </text>
-                <Show when={monitorLines(snap())[0]}>{(item) => <text fg={theme.text}>{item()}</text>}</Show>
+                <For each={highlight(snap(), now())}>{(item) => <text fg={theme.text}>{item}</text>}</For>
+                <Show when={primary(snap(), now())}>{(item) => <text fg={theme.text}>{item()}</text>}</Show>
                 <text fg={theme.textMuted} wrapMode="word">
                   {monitorFacts(snap(), now()).join(" · ")}
                 </text>
@@ -247,7 +306,9 @@ export function DialogStatus() {
                                   {accountFacts(item, now()).join(" · ")}
                                 </text>
                               </Show>
-                              <For each={accountLines(item)}>{(line) => <text fg={theme.text}>{line}</text>}</For>
+                              <For each={accountLines(snap(), item)}>
+                                {(line) => <text fg={theme.text}>{line}</text>}
+                              </For>
                               <Show when={item.message}>
                                 <text fg={theme.textMuted} wrapMode="word">
                                   {item.message}

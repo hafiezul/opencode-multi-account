@@ -301,7 +301,7 @@ describe("provider monitor endpoint", () => {
           expect(body.usage?.requests?.used).toBe(37)
           expect(body.usage?.requests?.limit).toBe(100)
           expect(body.reset_at).toBeDefined()
-          expect(body.message).toBe("Live OpenAI quota data.")
+          expect(body.message).toBe("Live OpenAI quota data via subscription-tier usage.")
           expect(body.notes).toContain(
             "OpenAI live quota data is account-wide and may include other models or variants on this profile.",
           )
@@ -506,7 +506,7 @@ describe("provider monitor endpoint", () => {
     })
   })
 
-  test.serial("picks the most exhausted OpenAI window on the main snapshot", async () => {
+  test.serial("prefers the shortest OpenAI window on the main snapshot", async () => {
     await using tmp = await tmpdir()
 
     await Instance.provide({
@@ -555,10 +555,10 @@ describe("provider monitor endpoint", () => {
             notes?: string[]
           }
 
-          expect(body.window?.label).toBe("7d quota")
-          expect(body.usage?.requests?.used).toBe(75)
+          expect(body.window?.label).toBe("5h quota")
+          expect(body.usage?.requests?.used).toBe(20)
           expect(body.usage?.requests?.limit).toBe(100)
-          expect(body.notes).toContain("5h quota: 20% used.")
+          expect(body.notes).toContain("7d quota: 75% used.")
         } finally {
           globalThis.fetch = originalFetch
         }
@@ -742,7 +742,7 @@ describe("provider monitor endpoint", () => {
           expect(body.window?.end).toBe(2000)
           expect(body.usage?.cost?.used).toBe(1.75)
           expect(body.usage?.cost?.currency).toBe("USD")
-          expect(body.message).toBe("Live OpenAI organization cost data. No budget limit was returned.")
+          expect(body.message).toBe("Live OpenAI organization cost data via API billing. No budget limit was returned.")
           expect(body.notes).toContain(
             "OpenAI organization cost data is org-wide and may include other models, projects, or API keys on this profile.",
           )
@@ -812,11 +812,11 @@ describe("provider monitor endpoint", () => {
 
           expect(body.state).toBe("live")
           expect(body.source).toBe("provider")
-          expect(body.window?.label).toBe("7d quota")
-          expect(body.usage?.requests?.used).toBe(35)
+          expect(body.window?.label).toBe("5h quota")
+          expect(body.usage?.requests?.used).toBe(15)
           expect(body.usage?.requests?.limit).toBe(100)
-          expect(body.reset_at).toBe(Date.parse("2026-04-07T00:00:00Z"))
-          expect(body.message).toBe("Live Anthropic quota data.")
+          expect(body.reset_at).toBe(Date.parse("2026-04-02T05:00:00Z"))
+          expect(body.message).toBe("Live Anthropic quota data via subscription usage.")
           expect(body.notes).toContain(
             "Anthropic live quota data is account-wide and may include other models or variants on this profile.",
           )
@@ -958,7 +958,9 @@ describe("provider monitor endpoint", () => {
           expect(body.window?.end).toBe(Date.parse("2026-04-03T00:00:00Z"))
           expect(body.usage?.cost?.used).toBe(2)
           expect(body.usage?.cost?.currency).toBe("USD")
-          expect(body.message).toBe("Live Anthropic organization cost data. No budget limit was returned.")
+          expect(body.message).toBe(
+            "Live Anthropic organization cost data via API billing. No budget limit was returned.",
+          )
           expect(body.notes).toContain(
             "Anthropic organization cost data is org-wide and may include other models, workspaces, or API keys on this profile.",
           )
@@ -1233,7 +1235,7 @@ describe("provider monitor endpoint", () => {
           expect(body.usage?.requests?.used).toBe(75)
           expect(body.usage?.requests?.limit).toBe(300)
           expect(body.reset_at).toBe(Date.parse("2026-05-01T00:00:00.000Z"))
-          expect(body.message).toBe("Live GitHub Copilot quota data.")
+          expect(body.message).toBe("Live GitHub Copilot premium request quota data.")
           expect(body.notes).toContain("Plan: individual.")
         } finally {
           globalThis.fetch = originalFetch
