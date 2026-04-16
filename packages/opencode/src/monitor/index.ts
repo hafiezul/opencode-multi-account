@@ -294,17 +294,15 @@ export namespace Monitor {
   }
 
   function account(input?: string) {
-    if (!input) return
-    const parts = input.split(".")
-    if (parts.length !== 3) return
-    try {
-      const value = JSON.parse(Buffer.from(parts[1], "base64url").toString())
-      if (typeof value?.chatgpt_account_id === "string") return value.chatgpt_account_id
-      if (typeof value?.["https://api.openai.com/auth"]?.chatgpt_account_id === "string") {
-        return value["https://api.openai.com/auth"].chatgpt_account_id
-      }
-      if (typeof value?.organizations?.[0]?.id === "string") return value.organizations[0].id
-    } catch {}
+    const parsed = token(input ?? "")
+    if (!record(parsed)) return
+    const direct = string(parsed.chatgpt_account_id)
+    if (direct) return direct
+    const auth = record(parsed["https://api.openai.com/auth"]) ? parsed["https://api.openai.com/auth"] : undefined
+    const scoped = string(auth?.chatgpt_account_id)
+    if (scoped) return scoped
+    const org = Array.isArray(parsed.organizations) && record(parsed.organizations[0]) ? parsed.organizations[0] : undefined
+    return string(org?.id)
   }
 
   function label(seconds?: number | null) {
@@ -534,11 +532,7 @@ export namespace Monitor {
   }
 
   function uniq(...list: Array<string[] | undefined>) {
-    const next = [] as string[]
-    for (const item of list.flatMap((item) => item ?? [])) {
-      if (next.includes(item)) continue
-      next.push(item)
-    }
+    const next = [...new Set(list.flatMap((item) => item ?? []))]
     if (next.length === 0) return
     return next
   }

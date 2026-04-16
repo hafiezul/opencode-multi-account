@@ -12,6 +12,7 @@ import { lazy } from "../../util/lazy"
 import { Log } from "../../util/log"
 import { Auth, normalizeProfile } from "../../auth"
 import { Monitor } from "../../monitor"
+import { Instance } from "../../project/instance"
 
 const log = Log.create({ service: "server" })
 const Profile = z.object({
@@ -179,6 +180,7 @@ export const ProviderRoutes = lazy(() =>
         const providerID = c.req.valid("param").providerID
         const profileName = c.req.valid("json").profile
         await Auth.activate(providerID, profileName)
+        await Instance.dispose()
         const item = await Auth.entry(providerID)
         return c.json({
           active: item!.active!,
@@ -220,6 +222,7 @@ export const ProviderRoutes = lazy(() =>
         const providerID = c.req.valid("param").providerID
         const profile = c.req.valid("query").profile
         await Auth.removeProfile(providerID, profile)
+        await Instance.dispose()
         const item = await Auth.entry(providerID)
         if (!item?.active) return c.json(null)
         return c.json({

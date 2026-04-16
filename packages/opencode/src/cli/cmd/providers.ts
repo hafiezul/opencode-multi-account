@@ -1,4 +1,4 @@
-import { Auth, normalizeProfile } from "../../auth"
+import { Auth } from "../../auth"
 import { cmd } from "./cmd"
 import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
@@ -61,16 +61,6 @@ export const all = Symbol("all-profiles")
 const invalid = Symbol("invalid-provider")
 
 class AmbiguousError extends Error {}
-
-async function saveAuth(provider: string, info: Auth.Info, profile?: string) {
-  const name = normalizeProfile(profile)
-  if (!name) {
-    await Auth.set(provider, info)
-    return
-  }
-  await Auth.put(provider, name, info)
-  await Auth.activate(provider, name)
-}
 
 function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(value)
@@ -310,7 +300,7 @@ async function handlePluginAuth(
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
-          await saveAuth(
+          await Auth.store(
             saveProvider,
             {
               type: "oauth",
@@ -323,7 +313,7 @@ async function handlePluginAuth(
           )
         }
         if ("key" in result) {
-          await saveAuth(
+          await Auth.store(
             saveProvider,
             {
               type: "api",
@@ -350,7 +340,7 @@ async function handlePluginAuth(
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
-          await saveAuth(
+          await Auth.store(
             saveProvider,
             {
               type: "oauth",
@@ -363,7 +353,7 @@ async function handlePluginAuth(
           )
         }
         if ("key" in result) {
-          await saveAuth(
+          await Auth.store(
             saveProvider,
             {
               type: "api",
@@ -388,7 +378,7 @@ async function handlePluginAuth(
       }
       if (result.type === "success") {
         const saveProvider = result.provider ?? provider
-        await saveAuth(
+        await Auth.store(
           saveProvider,
           {
             type: "api",
@@ -599,7 +589,7 @@ export const ProvidersLoginCommand = cmd({
             prompts.outro("Done")
             return
           }
-          await saveAuth(
+          await Auth.store(
             formatHttpUrl(url),
             {
               type: "wellknown",
@@ -755,7 +745,7 @@ export const ProvidersLoginCommand = cmd({
           validate: (x) => (x && x.length > 0 ? undefined : "Required"),
         })
         if (prompts.isCancel(key)) throw new UI.CancelledError()
-        await saveAuth(
+        await Auth.store(
           provider,
           {
             type: "api",

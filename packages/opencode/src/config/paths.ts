@@ -24,7 +24,7 @@ export namespace ConfigPaths {
       .flat()
       .toSorted((a, b) => {
         if (a.dir !== b.dir) return a.dir.length - b.dir.length
-        return a.idx - b.idx
+        return b.idx - a.idx
       })
       .map((item) => item.file)
   }

@@ -286,8 +286,27 @@ export namespace Auth {
     return runPromise((service) => service.activate(key, name))
   }
 
+  export async function store(key: string, info: Info, name?: string) {
+    const profile = normalizeProfile(name)
+    if (!profile) {
+      await set(key, info)
+      return
+    }
+    await put(key, profile, info)
+    await activate(key, profile)
+  }
+
   export async function removeProfile(key: string, name: string) {
     return runPromise((service) => service.removeProfile(key, name))
+  }
+
+  export async function meta(providerID: string, name?: string) {
+    const item = await resolve(providerID, name)
+    if (!item.profile) return
+    return {
+      profile: item.profile,
+      accountID: item.accountID,
+    }
   }
 
   export async function resolve(providerID: string, name?: string) {

@@ -66,15 +66,6 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
 
-  async function auth(providerID: ProviderID) {
-    const ctx = await Auth.resolve(providerID)
-    if (!ctx.profile) return
-    return {
-      profile: ctx.profile,
-      accountID: ctx.accountID,
-    }
-  }
-
   export interface Interface {
     readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -584,7 +575,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
           modelID: taskModel.id,
           providerID: taskModel.providerID,
-          auth: yield* Effect.promise(() => auth(taskModel.providerID)),
+          auth: yield* Effect.promise(() => Auth.meta(taskModel.providerID)),
           time: { created: Date.now() },
         })
         let part: MessageV2.ToolPart = yield* sessions.updatePart({
@@ -801,7 +792,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
           modelID: model.modelID,
           providerID: model.providerID,
-          auth: yield* Effect.promise(() => auth(model.providerID)),
+          auth: yield* Effect.promise(() => Auth.meta(model.providerID)),
         }
         yield* sessions.updateMessage(msg)
         const part: MessageV2.ToolPart = {
@@ -1460,7 +1451,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
               modelID: model.id,
               providerID: model.providerID,
-              auth: yield* Effect.promise(() => auth(model.providerID)),
+              auth: yield* Effect.promise(() => Auth.meta(model.providerID)),
               time: { created: Date.now() },
               sessionID,
             }

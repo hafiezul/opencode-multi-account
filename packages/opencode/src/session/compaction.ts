@@ -24,15 +24,6 @@ import { isOverflow as overflow } from "./overflow"
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
 
-  async function auth(providerID: ProviderID) {
-    const ctx = await Auth.resolve(providerID)
-    if (!ctx.profile) return
-    return {
-      profile: ctx.profile,
-      accountID: ctx.accountID,
-    }
-  }
-
   export const Event = {
     Compacted: BusEvent.define(
       "session.compacted",
@@ -253,7 +244,7 @@ When constructing the summary, try to stick to this template:
           },
           modelID: model.id,
           providerID: model.providerID,
-          auth: yield* Effect.promise(() => auth(model.providerID)),
+          auth: yield* Effect.promise(() => Auth.meta(model.providerID)),
           time: {
             created: Date.now(),
           },

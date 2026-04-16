@@ -286,17 +286,7 @@ export namespace Provider {
 
         const awsAccessKeyId = Env.get("AWS_ACCESS_KEY_ID")
 
-        // TODO: Using process.env directly because Env.set only updates a process.env shallow copy,
-        // until the scope of the Env API is clarified (test only or runtime?)
-        const awsBearerToken = iife(() => {
-          const envToken = process.env.AWS_BEARER_TOKEN_BEDROCK
-          if (envToken) return envToken
-          if (auth?.type === "api") {
-            process.env.AWS_BEARER_TOKEN_BEDROCK = auth.key
-            return auth.key
-          }
-          return undefined
-        })
+        const awsBearerToken = Env.get("AWS_BEARER_TOKEN_BEDROCK") ?? (auth?.type === "api" ? auth.key : undefined)
 
         const awsWebIdentityTokenFile = Env.get("AWS_WEB_IDENTITY_TOKEN_FILE")
 
@@ -1197,8 +1187,15 @@ export namespace Provider {
               ),
             )
             const opts = options ?? {}
-            const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
-            mergeProvider(providerID, patch)
+            if (providers[providerID]) {
+              providers[providerID] = {
+                ...providers[providerID],
+                options: mergeDeep(providers[providerID].options, opts),
+                models: database[plugin.auth!.provider]?.models ?? providers[providerID].models,
+              }
+              continue
+            }
+            mergeProvider(providerID, { source: "custom", options: opts })
           }
 
           for (const [id, fn] of Object.entries(custom(dep))) {

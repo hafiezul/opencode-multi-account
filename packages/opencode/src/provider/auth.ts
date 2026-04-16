@@ -220,44 +220,30 @@ export namespace ProviderAuth {
         )
         if (!result || result.type !== "success") return yield* Effect.fail(new OauthCallbackFailed({}))
         const providerID = ProviderID.make(result.provider ?? input.providerID)
+        const save = (info: Auth.Info) => {
+          if (!name) return auth.set(providerID, info)
+          return Effect.gen(function* () {
+            yield* auth.put(providerID, name, info)
+            yield* auth.activate(providerID, name)
+          })
+        }
 
         if ("key" in result) {
-          if (!name) {
-            yield* auth.set(providerID, {
-              type: "api",
-              key: result.key,
-            })
-          }
-          if (name) {
-            yield* auth.put(providerID, name, {
-              type: "api",
-              key: result.key,
-            })
-            yield* auth.activate(providerID, name)
-          }
+          yield* save({
+            type: "api",
+            key: result.key,
+          })
         }
 
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extra } = result
-          if (!name) {
-            yield* auth.set(providerID, {
-              type: "oauth",
-              access,
-              refresh,
-              expires,
-              ...extra,
-            })
-          }
-          if (name) {
-            yield* auth.put(providerID, name, {
-              type: "oauth",
-              access,
-              refresh,
-              expires,
-              ...extra,
-            })
-            yield* auth.activate(providerID, name)
-          }
+          yield* save({
+            type: "oauth",
+            access,
+            refresh,
+            expires,
+            ...extra,
+          })
         }
       })
 

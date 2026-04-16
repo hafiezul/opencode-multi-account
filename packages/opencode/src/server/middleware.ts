@@ -1,4 +1,5 @@
 import { Provider } from "../provider/provider"
+import { Auth } from "../auth"
 import { NamedError } from "@opencode-ai/util/error"
 import { NotFoundError } from "../storage/db"
 import { Session } from "../session"
@@ -12,6 +13,15 @@ export function errorHandler(log: Log.Logger): ErrorHandler {
     log.error("failed", {
       error: err,
     })
+    if (err instanceof Auth.AuthError) {
+      return c.json(
+        {
+          name: "AuthError",
+          message: err.message,
+        },
+        { status: 400 },
+      )
+    }
     if (err instanceof NamedError) {
       let status: ContentfulStatusCode
       if (err instanceof NotFoundError) status = 404

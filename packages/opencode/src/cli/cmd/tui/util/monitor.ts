@@ -10,20 +10,7 @@ type Cost = Item & {
   currency?: string
 }
 
-type Source = {
-  scope?: MonitorSnapshot["scope"]
-  window?: MonitorSnapshot["window"]
-  message?: string
-  notes?: string[]
-  state?: MonitorSnapshot["state"]
-  source?: MonitorSnapshot["source"]
-  fetched_at?: number
-  expires_at?: number
-  key?: string
-  label?: string
-  reset_at?: number
-  usage?: MonitorSnapshot["usage"]
-}
+type Source = Partial<MonitorSnapshot>
 
 function pct(item?: Item) {
   if (item?.used === undefined || item.limit === undefined) return

@@ -10,6 +10,7 @@ import z from "zod"
 import { Auth } from "../auth"
 import { Flag } from "../flag/flag"
 import { ProviderID } from "../provider/schema"
+import { Instance } from "../project/instance"
 import { WorkspaceRouterMiddleware } from "./router"
 import { errors } from "./error"
 import { GlobalRoutes } from "./routes/global"
@@ -34,7 +35,14 @@ export namespace Server {
   }
 
   const log = Log.create({ service: "server" })
-  const zipped = compress()
+const zipped = compress()
+const AuthBody = z.union([
+  Auth.Info.zod,
+  z.object({
+    profile: z.string().optional(),
+    auth: Auth.Info.zod,
+  }),
+])
 
   const skipCompress = (path: string, method: string) => {
     if (path === "/event" || path === "/global/event" || path === "/global/sync-event") return true
@@ -123,11 +131,12 @@ export namespace Server {
             providerID: ProviderID.zod,
           }),
         ),
-        validator("json", Auth.Info.zod),
+        validator("json", AuthBody),
         async (c) => {
           const providerID = c.req.valid("param").providerID
-          const info = c.req.valid("json")
-          await Auth.set(providerID, info)
+          const body = c.req.valid("json")
+          await Auth.store(providerID, "auth" in body ? body.auth : body, "auth" in body ? body.profile : undefined)
+          await Instance.dispose()
           return c.json(true)
         },
       )
@@ -158,6 +167,7 @@ export namespace Server {
         async (c) => {
           const providerID = c.req.valid("param").providerID
           await Auth.remove(providerID)
+          await Instance.dispose()
           return c.json(true)
         },
       )
