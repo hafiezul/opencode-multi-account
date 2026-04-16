@@ -858,6 +858,11 @@ export function Prompt(props: PromptProps) {
     if (snap.state === "estimated") return theme.warning
     return theme.textMuted
   })
+  const profileLabel = createMemo(() => {
+    const active = profile()
+    if (!active) return
+    return Locale.truncateMiddle(active, 24)
+  })
 
   createEffect(() => {
     const scope = monitorScope()
@@ -1134,35 +1139,52 @@ export function Prompt(props: PromptProps) {
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={2} justifyContent="space-between">
-              <box flexDirection="column" gap={0} flexGrow={1}>
-                <box flexDirection="row" gap={1}>
-                  <text fg={highlight()}>
-                    {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}
-                  </text>
-                  <Show when={store.mode === "normal" && monitorLabel()}>
-                    <>
-                      <text fg={theme.textMuted}>·</text>
-                      <text fg={monitorColor()}>{monitorLabel()}</text>
-                    </>
-                  </Show>
-                </box>
+              <box flexDirection="row" gap={1} flexGrow={1} overflow="hidden">
+                <text fg={highlight()} wrapMode="none" flexShrink={0}>
+                  {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}
+                </text>
+                <Show when={store.mode === "normal" && monitorLabel()}>
+                  <>
+                    <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                      ·
+                    </text>
+                    <text fg={monitorColor()} wrapMode="none" flexShrink={0}>
+                      {monitorLabel()}
+                    </text>
+                  </>
+                </Show>
                 <Show when={store.mode === "normal"}>
-                  <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
+                  <>
+                    <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                      ·
+                    </text>
+                    <text fg={keybind.leader ? theme.textMuted : theme.text} wrapMode="none" flexShrink={0}>
                       {local.model.parsed().model}
                     </text>
-                    <text fg={theme.textMuted}>{currentProviderLabel()}</text>
+                    <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                      {currentProviderLabel()}
+                    </text>
                     <Show when={showVariant()}>
-                      <text fg={theme.textMuted}>·</text>
-                      <text>
-                        <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
-                      </text>
+                      <>
+                        <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                          ·
+                        </text>
+                        <text wrapMode="none" flexShrink={0}>
+                          <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
+                        </text>
+                      </>
                     </Show>
-                    <Show when={profile()}>
-                      <text fg={theme.textMuted}>·</text>
-                      <text fg={theme.textMuted}>{profile()}</text>
+                    <Show when={profileLabel()}>
+                      <>
+                        <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                          ·
+                        </text>
+                        <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                          {profileLabel()}
+                        </text>
+                      </>
                     </Show>
-                  </box>
+                  </>
                 </Show>
               </box>
               <Show when={hasRightContent()}>
